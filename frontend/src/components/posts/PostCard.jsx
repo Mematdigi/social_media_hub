@@ -2,8 +2,8 @@ import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { format } from 'date-fns';
-import { Pencil, Trash2 } from 'lucide-react';
-import { Badge } from '../common/Badge';
+import { Pencil, Trash2, Clock } from 'lucide-react';
+import { PostStatusBadge } from '../scheduler/PostStatusBadge';
 import { PlatformIcon } from '../accounts/PlatformIcon';
 import { Button } from '../ui/button';
 import {
@@ -17,7 +17,6 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '../ui/alert-dialog';
-import { cn } from '../../lib/utils';
 
 export const PostCard = ({ post, onDelete }) => {
   const navigate = useNavigate();
@@ -45,36 +44,30 @@ export const PostCard = ({ post, onDelete }) => {
       className="bg-white rounded-3xl border border-slate-100 p-5 shadow-card hover:shadow-card-hover transition-all"
     >
       <div className="flex items-start justify-between gap-4 mb-4">
-        <p className="text-slate-700 flex-1 leading-relaxed">
-          {contentPreview}
-        </p>
-        <Badge variant={post.status === 'published' ? 'published' : 'draft'}>
-          {post.status}
-        </Badge>
+        <p className="text-slate-700 flex-1 leading-relaxed">{contentPreview}</p>
+        <PostStatusBadge status={post.status} />
       </div>
+
+      {/* Scheduled Time */}
+      {post.scheduledAt && post.status === 'scheduled' && (
+        <div className="flex items-center gap-2 text-sm text-blue-600 mb-3 bg-blue-50 px-3 py-2 rounded-xl">
+          <Clock className="w-4 h-4" />
+          Scheduled for {format(new Date(post.scheduledAt), "MMM d, yyyy 'at' h:mm a")}
+        </div>
+      )}
 
       {/* Platforms */}
       <div className="flex flex-wrap gap-2 mb-4">
         {post.accounts?.map((account) => (
-          <div
-            key={account.id}
-            className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-slate-50"
-          >
+          <div key={account.id} className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-slate-50">
             <PlatformIcon platform={account.platform} size="sm" />
-            <span className="text-xs font-medium text-slate-600">
-              {account.accountName}
-            </span>
+            <span className="text-xs font-medium text-slate-600">{account.accountName}</span>
           </div>
         ))}
         {(!post.accounts || post.accounts.length === 0) && post.platforms?.map((platform) => (
-          <div
-            key={platform}
-            className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-slate-50"
-          >
+          <div key={platform} className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-slate-50">
             <PlatformIcon platform={platform} size="sm" />
-            <span className="text-xs font-medium text-slate-600 capitalize">
-              {platform}
-            </span>
+            <span className="text-xs font-medium text-slate-600 capitalize">{platform}</span>
           </div>
         ))}
       </div>
@@ -82,7 +75,10 @@ export const PostCard = ({ post, onDelete }) => {
       {/* Footer */}
       <div className="flex items-center justify-between pt-3 border-t border-slate-100">
         <span className="text-sm text-slate-500">
-          {format(new Date(post.createdAt), 'MMM d, yyyy')}
+          {post.publishedAt 
+            ? `Published ${format(new Date(post.publishedAt), 'MMM d, yyyy')}`
+            : `Created ${format(new Date(post.createdAt), 'MMM d, yyyy')}`
+          }
         </span>
         <div className="flex items-center gap-2">
           <Button
@@ -111,17 +107,11 @@ export const PostCard = ({ post, onDelete }) => {
             <AlertDialogContent className="rounded-3xl">
               <AlertDialogHeader>
                 <AlertDialogTitle className="font-heading">Delete Post?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  This action cannot be undone. This will permanently delete your post.
-                </AlertDialogDescription>
+                <AlertDialogDescription>This action cannot be undone.</AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
                 <AlertDialogCancel className="rounded-full">Cancel</AlertDialogCancel>
-                <AlertDialogAction
-                  onClick={handleDelete}
-                  disabled={deleting}
-                  className="rounded-full bg-red-500 hover:bg-red-600"
-                >
+                <AlertDialogAction onClick={handleDelete} disabled={deleting} className="rounded-full bg-red-500 hover:bg-red-600">
                   {deleting ? 'Deleting...' : 'Delete'}
                 </AlertDialogAction>
               </AlertDialogFooter>
