@@ -306,6 +306,157 @@ class SocialHubAPITester:
         
         return success
 
+    def test_scheduler_apis(self):
+        """Test Phase 3 - Scheduler APIs"""
+        if not self.token:
+            self.log_test("Scheduler APIs", False, "No token available")
+            return False
+        
+        print("\n📅 Testing Scheduler APIs...")
+        
+        # Test 1: Get Calendar Data
+        success, response = self.make_request('GET', 'scheduler/calendar?month=3&year=2026')
+        if success and isinstance(response, dict):
+            self.log_test("Scheduler Calendar API", True, f"Calendar data retrieved")
+        else:
+            self.log_test("Scheduler Calendar API", False, f"Failed: {response}")
+        
+        # Test 2: Create Scheduled Post
+        accounts = self.test_accounts_list()
+        if accounts:
+            account_ids = [accounts[0]['id']]
+            scheduled_post_data = {
+                "content": "Test scheduled post",
+                "accountIds": account_ids,
+                "mediaUrls": [],
+                "status": "scheduled",
+                "scheduledAt": "2026-03-15T10:00:00Z"
+            }
+            
+            success, response = self.make_request('POST', 'posts', scheduled_post_data)
+            if success and response.get('status') == 'scheduled':
+                post_id = response['id']
+                self.log_test("Create Scheduled Post", True, f"Scheduled post {post_id}")
+                
+                # Test 3: Force Publish Post
+                success, response = self.make_request('POST', f'posts/{post_id}/publish')
+                if success:
+                    self.log_test("Force Publish Post", True, f"Published post {post_id}")
+                else:
+                    self.log_test("Force Publish Post", False, f"Failed: {response}")
+            else:
+                self.log_test("Create Scheduled Post", False, f"Failed: {response}")
+        
+        return True
+
+    def test_inbox_apis(self):
+        """Test Phase 4 - Inbox APIs"""
+        if not self.token:
+            self.log_test("Inbox APIs", False, "No token available")
+            return False
+        
+        print("\n📨 Testing Inbox APIs...")
+        
+        # Test 1: Sync Inbox (to generate messages)
+        success, response = self.make_request('POST', 'inbox/sync')
+        if success:
+            self.log_test("Inbox Sync", True, f"Synced {response.get('synced', 0)} accounts")
+        else:
+            self.log_test("Inbox Sync", False, f"Failed: {response}")
+        
+        # Test 2: Get Messages
+        success, response = self.make_request('GET', 'inbox')
+        if success and 'messages' in response:
+            messages = response['messages']
+            self.log_test("Get Inbox Messages", True, f"Retrieved {len(messages)} messages")
+            
+            # Test 3: Get Unread Count
+            success, response = self.make_request('GET', 'inbox/unread-count')
+            if success and 'total' in response:
+                self.log_test("Get Unread Count", True, f"Unread count: {response['total']}")
+            else:
+                self.log_test("Get Unread Count", False, f"Failed: {response}")
+            
+            # Test with filters
+            success, response = self.make_request('GET', 'inbox?platform=facebook&type=dm')
+            if success:
+                self.log_test("Get Filtered Messages", True, f"Filtered messages retrieved")
+            else:
+                self.log_test("Get Filtered Messages", False, f"Failed: {response}")
+            
+            # Test 4: Mark Message as Read (if messages exist)
+            if messages:
+                message_id = messages[0]['id']
+                success, response = self.make_request('PUT', f'inbox/{message_id}/read')
+                if success:
+                    self.log_test("Mark Message Read", True, f"Marked message {message_id} as read")
+                    
+                    # Test 5: Reply to Message
+                    reply_data = {"content": "Thank you for your message!"}
+                    success, response = self.make_request('POST', f'inbox/{message_id}/reply', reply_data)
+                    if success:
+                        self.log_test("Reply to Message", True, f"Replied to message {message_id}")
+                    else:
+                        self.log_test("Reply to Message", False, f"Failed: {response}")
+                else:
+                    self.log_test("Mark Message Read", False, f"Failed: {response}")
+        else:
+            self.log_test("Get Inbox Messages", False, f"Failed: {response}")
+        
+        return True
+
+    def test_analytics_apis(self):
+        """Test Phase 5 - Analytics APIs"""
+        if not self.token:
+            self.log_test("Analytics APIs", False, "No token available")
+            return False
+        
+        print("\n📊 Testing Analytics APIs...")
+        
+        # Test 1: Sync Analytics (to generate data)
+        success, response = self.make_request('POST', 'analytics/sync')
+        if success:
+            self.log_test("Analytics Sync", True, f"Synced {response.get('synced', 0)} accounts")
+        else:
+            self.log_test("Analytics Sync", False, f"Failed: {response}")
+        
+        # Test 2: Get Analytics Overview
+        success, response = self.make_request('GET', 'analytics/overview')
+        if success and 'totalFollowers' in response:
+            self.log_test("Analytics Overview", True, f"Overview data retrieved")
+        else:
+            self.log_test("Analytics Overview", False, f"Failed: {response}")
+        
+        # Test 3: Get Followers Chart Data
+        success, response = self.make_request('GET', 'analytics/followers')
+        if success and 'dates' in response and 'series' in response:
+            self.log_test("Followers Chart Data", True, f"Chart data retrieved")
+        else:
+            self.log_test("Followers Chart Data", False, f"Failed: {response}")
+        
+        # Test 4: Get Engagement Chart Data
+        success, response = self.make_request('GET', 'analytics/engagement')
+        if success and 'platforms' in response and 'metrics' in response:
+            self.log_test("Engagement Chart Data", True, f"Engagement data retrieved")
+        else:
+            self.log_test("Engagement Chart Data", False, f"Failed: {response}")
+        
+        # Test 5: Get Top Posts
+        success, response = self.make_request('GET', 'analytics/posts')
+        if success and isinstance(response, list):
+            self.log_test("Top Posts Data", True, f"Retrieved {len(response)} top posts")
+        else:
+            self.log_test("Top Posts Data", False, f"Failed: {response}")
+        
+        # Test with date range parameters
+        success, response = self.make_request('GET', 'analytics/overview?startDate=2024-01-01&endDate=2024-12-31')
+        if success:
+            self.log_test("Analytics with Date Range", True, f"Date range filtering works")
+        else:
+            self.log_test("Analytics with Date Range", False, f"Failed: {response}")
+        
+        return True
+
     def run_all_tests(self):
         """Run complete test suite"""
         print("🔐 Testing Authentication...")
