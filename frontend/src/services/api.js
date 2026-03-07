@@ -4,23 +4,17 @@ const API_URL = process.env.REACT_APP_BACKEND_URL;
 
 const api = axios.create({
   baseURL: `${API_URL}/api`,
-  headers: {
-    'Content-Type': 'application/json',
-  },
+  headers: { 'Content-Type': 'application/json' },
 });
 
 // Request interceptor - attach token
 api.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('socialhub_token');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
+    if (token) config.headers.Authorization = `Bearer ${token}`;
     return config;
   },
-  (error) => {
-    return Promise.reject(error);
-  }
+  (error) => Promise.reject(error)
 );
 
 // Response interceptor - handle 401
@@ -52,11 +46,36 @@ export const accountsAPI = {
 
 // Posts API
 export const postsAPI = {
-  getAll: () => api.get('/posts'),
+  getAll: (status) => api.get('/posts', { params: { status } }),
   getOne: (postId) => api.get(`/posts/${postId}`),
   create: (data) => api.post('/posts', data),
   update: (postId, data) => api.put(`/posts/${postId}`, data),
   delete: (postId) => api.delete(`/posts/${postId}`),
+  publish: (postId) => api.post(`/posts/${postId}/publish`),
+};
+
+// Scheduler API
+export const schedulerAPI = {
+  getCalendar: (month, year) => api.get('/scheduler/calendar', { params: { month, year } }),
+};
+
+// Inbox API
+export const inboxAPI = {
+  getMessages: (params) => api.get('/inbox', { params }),
+  getUnreadCount: () => api.get('/inbox/unread-count'),
+  markRead: (messageId) => api.put(`/inbox/${messageId}/read`),
+  markAllRead: (platform) => api.put('/inbox/read-all', null, { params: { platform } }),
+  reply: (messageId, content) => api.post(`/inbox/${messageId}/reply`, { content }),
+  sync: () => api.post('/inbox/sync'),
+};
+
+// Analytics API
+export const analyticsAPI = {
+  getOverview: (startDate, endDate) => api.get('/analytics/overview', { params: { startDate, endDate } }),
+  getFollowers: (startDate, endDate) => api.get('/analytics/followers', { params: { startDate, endDate } }),
+  getEngagement: (startDate, endDate) => api.get('/analytics/engagement', { params: { startDate, endDate } }),
+  getTopPosts: (startDate, endDate) => api.get('/analytics/posts', { params: { startDate, endDate } }),
+  sync: () => api.post('/analytics/sync'),
 };
 
 export default api;
