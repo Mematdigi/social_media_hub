@@ -480,6 +480,11 @@ class SocialHubAPITester:
         # Posts tests
         self.test_posts_crud()
         
+        # Phase 3+4+5 Tests
+        self.test_scheduler_apis()
+        self.test_inbox_apis()
+        self.test_analytics_apis()
+        
         print("\n🔌 Testing Account Disconnection...")
         
         # Cleanup test
