@@ -13,6 +13,9 @@ import Accounts from './pages/Accounts';
 import Posts from './pages/Posts';
 import AddPost from './pages/AddPost';
 import EditPost from './pages/EditPost';
+import Scheduler from './pages/Scheduler';
+import Inbox from './pages/Inbox';
+import Analytics from './pages/Analytics';
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
@@ -33,7 +36,7 @@ const ProtectedRoute = ({ children }) => {
   return children;
 };
 
-// Public Route Component (redirects to dashboard if authenticated)
+// Public Route Component
 const PublicRoute = ({ children }) => {
   const { isAuthenticated, loading } = useAuth();
 
@@ -56,64 +59,18 @@ function AppRoutes() {
   return (
     <Routes>
       {/* Public Routes */}
-      <Route
-        path="/login"
-        element={
-          <PublicRoute>
-            <Login />
-          </PublicRoute>
-        }
-      />
-      <Route
-        path="/register"
-        element={
-          <PublicRoute>
-            <Register />
-          </PublicRoute>
-        }
-      />
+      <Route path="/login" element={<PublicRoute><Login /></PublicRoute>} />
+      <Route path="/register" element={<PublicRoute><Register /></PublicRoute>} />
 
       {/* Protected Routes */}
-      <Route
-        path="/dashboard"
-        element={
-          <ProtectedRoute>
-            <Dashboard />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/accounts"
-        element={
-          <ProtectedRoute>
-            <Accounts />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/posts"
-        element={
-          <ProtectedRoute>
-            <Posts />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/posts/new"
-        element={
-          <ProtectedRoute>
-            <AddPost />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/posts/:id/edit"
-        element={
-          <ProtectedRoute>
-            <EditPost />
-          </ProtectedRoute>
-        }
-      />
+      <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+      <Route path="/accounts" element={<ProtectedRoute><Accounts /></ProtectedRoute>} />
+      <Route path="/posts" element={<ProtectedRoute><Posts /></ProtectedRoute>} />
+      <Route path="/posts/new" element={<ProtectedRoute><AddPost /></ProtectedRoute>} />
+      <Route path="/posts/:id/edit" element={<ProtectedRoute><EditPost /></ProtectedRoute>} />
+      <Route path="/scheduler" element={<ProtectedRoute><Scheduler /></ProtectedRoute>} />
+      <Route path="/inbox" element={<ProtectedRoute><Inbox /></ProtectedRoute>} />
+      <Route path="/analytics" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
 
       {/* Redirects */}
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
