@@ -1,34 +1,176 @@
-.App-logo {
-    height: 40vmin;
-    pointer-events: none;
+/* SocialHub Custom Styles */
+
+/* Layout */
+.sidebar-transition {
+  transition: width 0.3s ease, padding 0.3s ease;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-    .App-logo {
-        animation: App-logo-spin infinite 20s linear;
-    }
+/* Card hover effects */
+.platform-card {
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
 }
 
-.App-header {
-    background-color: #0f0f10;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    font-size: calc(10px + 2vmin);
-    color: white;
+.platform-card:hover {
+  transform: translateY(-4px);
 }
 
-.App-link {
-    color: #61dafb;
+/* Button styles */
+.btn-primary {
+  @apply bg-primary text-white font-bold px-6 py-3 rounded-full shadow-button;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
-@keyframes App-logo-spin {
-    from {
-        transform: rotate(0deg);
-    }
-    to {
-        transform: rotate(360deg);
-    }
+.btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(99, 102, 241, 0.45);
+}
+
+.btn-primary:active {
+  transform: scale(0.98);
+}
+
+.btn-secondary {
+  @apply bg-white text-slate-700 font-medium px-6 py-3 rounded-full border border-slate-200 shadow-sm;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.btn-secondary:hover {
+  @apply border-slate-300 shadow-md;
+  transform: translateY(-1px);
+}
+
+/* Input styles */
+.input-primary {
+  @apply bg-slate-50 border-transparent rounded-xl h-12 px-4 font-medium text-slate-700;
+  transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.input-primary:focus {
+  @apply bg-white border-primary ring-4 ring-primary/10;
+}
+
+/* Badge styles */
+.badge-connected {
+  @apply inline-flex items-center px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-green-100 text-green-700;
+}
+
+.badge-draft {
+  @apply inline-flex items-center px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-yellow-100 text-yellow-700;
+}
+
+.badge-published {
+  @apply inline-flex items-center px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-blue-100 text-blue-700;
+}
+
+/* Stat card */
+.stat-card {
+  @apply relative overflow-hidden bg-white p-6 rounded-3xl border border-slate-100 shadow-card;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.stat-card:hover {
+  @apply border-indigo-100 shadow-card-hover;
+}
+
+/* Platform colors as background */
+.bg-platform-facebook { background-color: #1877F2; }
+.bg-platform-twitter { background-color: #1DA1F2; }
+.bg-platform-instagram { background-color: #E4405F; }
+.bg-platform-linkedin { background-color: #0A66C2; }
+.bg-platform-tiktok { background-color: #000000; }
+.bg-platform-youtube { background-color: #FF0000; }
+.bg-platform-pinterest { background-color: #E60023; }
+.bg-platform-snapchat { background-color: #FFFC00; }
+.bg-platform-reddit { background-color: #FF4500; }
+.bg-platform-tumblr { background-color: #36465D; }
+.bg-platform-telegram { background-color: #0088CC; }
+.bg-platform-whatsapp_business { background-color: #25D366; }
+.bg-platform-discord { background-color: #5865F2; }
+.bg-platform-twitch { background-color: #9146FF; }
+.bg-platform-medium { background-color: #000000; }
+.bg-platform-quora { background-color: #B92B27; }
+.bg-platform-vk { background-color: #4C75A3; }
+.bg-platform-weibo { background-color: #E6162D; }
+.bg-platform-threads { background-color: #000000; }
+.bg-platform-mastodon { background-color: #6364FF; }
+.bg-platform-bluesky { background-color: #0085FF; }
+.bg-platform-behance { background-color: #1769FF; }
+.bg-platform-dribbble { background-color: #EA4C89; }
+.bg-platform-github { background-color: #181717; }
+.bg-platform-producthunt { background-color: #DA552F; }
+
+/* Text platform colors */
+.text-platform-facebook { color: #1877F2; }
+.text-platform-twitter { color: #1DA1F2; }
+.text-platform-instagram { color: #E4405F; }
+.text-platform-linkedin { color: #0A66C2; }
+.text-platform-tiktok { color: #000000; }
+.text-platform-youtube { color: #FF0000; }
+.text-platform-pinterest { color: #E60023; }
+.text-platform-snapchat { color: #FFFC00; }
+.text-platform-reddit { color: #FF4500; }
+.text-platform-tumblr { color: #36465D; }
+.text-platform-telegram { color: #0088CC; }
+.text-platform-whatsapp_business { color: #25D366; }
+.text-platform-discord { color: #5865F2; }
+.text-platform-twitch { color: #9146FF; }
+.text-platform-medium { color: #000000; }
+.text-platform-quora { color: #B92B27; }
+.text-platform-vk { color: #4C75A3; }
+.text-platform-weibo { color: #E6162D; }
+.text-platform-threads { color: #000000; }
+.text-platform-mastodon { color: #6364FF; }
+.text-platform-bluesky { color: #0085FF; }
+.text-platform-behance { color: #1769FF; }
+.text-platform-dribbble { color: #EA4C89; }
+.text-platform-github { color: #181717; }
+.text-platform-producthunt { color: #DA552F; }
+
+/* Border platform colors */
+.border-platform-facebook { border-color: #1877F2; }
+.border-platform-twitter { border-color: #1DA1F2; }
+.border-platform-instagram { border-color: #E4405F; }
+.border-platform-linkedin { border-color: #0A66C2; }
+.border-platform-tiktok { border-color: #000000; }
+.border-platform-youtube { border-color: #FF0000; }
+.border-platform-pinterest { border-color: #E60023; }
+.border-platform-snapchat { border-color: #FFFC00; }
+.border-platform-reddit { border-color: #FF4500; }
+.border-platform-tumblr { border-color: #36465D; }
+.border-platform-telegram { border-color: #0088CC; }
+.border-platform-whatsapp_business { border-color: #25D366; }
+.border-platform-discord { border-color: #5865F2; }
+.border-platform-twitch { border-color: #9146FF; }
+.border-platform-medium { border-color: #000000; }
+.border-platform-quora { border-color: #B92B27; }
+.border-platform-vk { border-color: #4C75A3; }
+.border-platform-weibo { border-color: #E6162D; }
+.border-platform-threads { border-color: #000000; }
+.border-platform-mastodon { border-color: #6364FF; }
+.border-platform-bluesky { border-color: #0085FF; }
+.border-platform-behance { border-color: #1769FF; }
+.border-platform-dribbble { border-color: #EA4C89; }
+.border-platform-github { border-color: #181717; }
+.border-platform-producthunt { border-color: #DA552F; }
+
+/* Glassmorphism sidebar */
+.sidebar-glass {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+/* Loading spinner */
+.spinner {
+  border: 3px solid #f3f3f3;
+  border-top: 3px solid #6366f1;
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
 }
