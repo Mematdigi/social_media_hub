@@ -11,9 +11,10 @@ Build "SocialHub" — a Social Media Management Dashboard with React + FastAPI +
 
 ## Architecture
 - **Frontend**: React with Tailwind CSS, Shadcn/UI components, Framer Motion
-- **Backend**: FastAPI (Python) with async MongoDB (Motor)
-- **Database**: MongoDB with collections: users, social_accounts, posts
-- **Auth**: JWT tokens (7-day expiry), bcrypt password hashing
+- **Backend**: Node.js/Express with Mongoose (converted from Python/FastAPI on March 10, 2026)
+- **Database**: MongoDB with collections: users, socialaccounts, posts, messages, analytics
+- **Auth**: JWT tokens (7-day expiry), bcryptjs password hashing
+- **Scheduler**: node-cron for auto-publish, inbox sync, analytics sync
 
 ## User Personas
 1. **Social Media Manager** - Manages multiple brand accounts across platforms
