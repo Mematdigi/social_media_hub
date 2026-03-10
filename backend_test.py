@@ -220,7 +220,7 @@ class SocialHubAPITester:
         success, response = self.make_request(
             'POST', 'posts', 
             post_data, 
-            expected_status=200
+            expected_status=201
         )
         
         if not success or 'id' not in response:
