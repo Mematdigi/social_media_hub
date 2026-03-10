@@ -326,7 +326,7 @@ class SocialHubAPITester:
                 "scheduledAt": "2026-03-15T10:00:00Z"
             }
             
-            success, response = self.make_request('POST', 'posts', scheduled_post_data)
+            success, response = self.make_request('POST', 'posts', scheduled_post_data, expected_status=201)
             if success and response.get('status') == 'scheduled':
                 post_id = response['id']
                 self.log_test("Create Scheduled Post", True, f"Scheduled post {post_id}")
