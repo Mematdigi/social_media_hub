@@ -17,7 +17,7 @@ import {
 import { getPlatformConfig } from '../../utils/platformConfig';
 import { cn } from '../../lib/utils';
 
-const API_URL = process.env.REACT_APP_BACKEND_URL;
+const API_URL = process.env.API_URL || 'http://localhost:5000';
 
 export const PlatformCard = ({ 
   platform, 
@@ -30,9 +30,17 @@ export const PlatformCard = ({
   const [disconnecting, setDisconnecting] = useState(false);
   const config = getPlatformConfig(platform);
 
-  const handleConnect = () => {
-    // Redirect to OAuth flow
-    window.location.href = `${API_URL}/api/accounts/oauth/${platform}/callback?user_id=${localStorage.getItem('socialhub_user_id') || 'demo'}`;
+  const handleConnect = async () => {
+    // Get the user ID from localStorage
+    const userId = localStorage.getItem('socialhub_user_id');
+    if (!userId) {
+      console.error('User ID not found. Please log in again.');
+      window.location.href = '/login';
+      return;
+    }
+
+    // Redirect to OAuth initiate endpoint (will redirect to real platform or demo mode)
+    window.location.href = `${API_URL}/api/accounts/oauth/${platform}?user_id=${userId}`;
   };
 
   const handleDisconnect = async () => {
