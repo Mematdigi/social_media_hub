@@ -23,7 +23,7 @@ const User = require('./models/User');
 const { v4: uuidv4 } = require('uuid');
 
 const app = express();
-const PORT = process.env.PORT || 8001;
+const PORT = process.env.PORT || 5000;
 
 // Middleware
 app.use(helmet());
@@ -222,7 +222,7 @@ cron.schedule('0 2 * * *', async () => {
 
 // Connect to MongoDB and start server
 const MONGO_URL = process.env.MONGO_URL || 'mongodb://localhost:27017';
-const DB_NAME = process.env.DB_NAME || 'socialhub';
+const DB_NAME = process.env.DB_NAME || 'SM_Tool';
 
 mongoose.connect(`${MONGO_URL}/${DB_NAME}`)
   .then(() => {

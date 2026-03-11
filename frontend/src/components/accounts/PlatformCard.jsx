@@ -17,8 +17,7 @@ import {
 import { getPlatformConfig } from '../../utils/platformConfig';
 import { cn } from '../../lib/utils';
 
-const API_URL = process.env.REACT_APP_BACKEND_URL;
-
+const API_URL = process.env.REACT_APP_BACKEND_URL || process.env.API_URL || 'http://localhost:5000';
 export const PlatformCard = ({ 
   platform, 
   connected = false, 
@@ -31,8 +30,11 @@ export const PlatformCard = ({
   const config = getPlatformConfig(platform);
 
   const handleConnect = () => {
+      const token = localStorage.getItem('token'); // your JWT token key
+      const user = localStorage.getItem('user'); // your user ID key
+      const userId = user ? JSON.parse(user).id : null;
     // Redirect to OAuth flow
-    window.location.href = `${API_URL}/api/accounts/oauth/${platform}/callback?user_id=${localStorage.getItem('socialhub_user_id') || 'demo'}`;
+window.location.href = `${API_URL}/api/accounts/oauth/${platform}?user_id=${userId}`;
   };
 
   const handleDisconnect = async () => {
