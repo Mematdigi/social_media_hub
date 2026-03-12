@@ -1,0 +1,223 @@
+// ============================================================
+// _analytics.scss — Analytics page
+// ============================================================
+@use 'variables' as *;
+@use 'mixins'    as *;
+
+// ── Overview metric grid ─────────────────────────────────────
+.analytics-metrics-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: clamp(0.75rem, 2vw, 1.25rem);
+  margin-bottom: clamp(1.5rem, 4vw, 2rem);
+
+  @include xs  { grid-template-columns: repeat(2, 1fr); }
+  @include lg  { grid-template-columns: repeat(4, 1fr); }
+}
+
+// ── Charts grid ──────────────────────────────────────────────
+.analytics-charts-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: clamp(1rem, 3vw, 1.5rem);
+  margin-bottom: clamp(1.5rem, 4vw, 2rem);
+
+  @include lg { grid-template-columns: repeat(2, 1fr); }
+}
+
+// ── Chart card ───────────────────────────────────────────────
+.chart-card {
+  @include card;
+
+  &__title {
+    font-family: $font-heading;
+    font-weight: 700;
+    color: $slate-900;
+    margin: 0 0 1.25rem;
+    font-size: $text-lg;
+  }
+
+  &__body {
+    width: 100%;
+    min-height: 200px;
+
+    @include sm  { min-height: 240px; }
+    @include lg  { min-height: 300px; }
+  }
+
+  &__empty {
+    @include flex-center;
+    flex-direction: column;
+    gap: 0.5rem;
+    min-height: 200px;
+    color: $slate-400;
+
+    @include sm  { min-height: 240px; }
+    @include lg  { min-height: 300px; }
+  }
+}
+
+// ── Platform Breakdown ───────────────────────────────────────
+.platform-breakdown {
+  @include card;
+  margin-bottom: clamp(1.5rem, 4vw, 2rem);
+
+  &__title {
+    font-family: $font-heading;
+    font-weight: 700;
+    color: $slate-900;
+    margin: 0 0 1.25rem;
+    font-size: $text-lg;
+  }
+
+  &__list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  &__row {
+    @include flex-between;
+    padding: clamp(0.75rem, 2vw, 1rem);
+    border-radius: $radius-lg;
+    background: $slate-50;
+    transition: background $transition-base;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+
+    @include hover-device {
+      &:hover { background: $slate-100; }
+    }
+  }
+
+  &__row-left {
+    @include flex-start(clamp(0.75rem, 2vw, 1rem));
+  }
+
+  &__name {
+    font-weight: 600;
+    color: $slate-900;
+    font-size: $text-sm;
+    text-transform: capitalize;
+    margin: 0;
+  }
+
+  &__handle {
+    font-size: $text-xs;
+    color: $slate-500;
+    margin: 0.125rem 0 0;
+  }
+
+  &__stats {
+    @include flex-start(clamp(1rem, 4vw, 2rem));
+    flex-wrap: wrap;
+  }
+
+  &__stat {
+    text-align: right;
+    min-width: 4rem;
+
+    &-label {
+      font-size: $text-xs;
+      color: $slate-500;
+      margin: 0 0 0.125rem;
+    }
+
+    &-value {
+      font-weight: 700;
+      color: $slate-900;
+      font-size: $text-sm;
+      margin: 0;
+    }
+  }
+}
+
+// ── Top Posts table ──────────────────────────────────────────
+.top-posts-card {
+  @include card;
+
+  &__title {
+    font-family: $font-heading;
+    font-weight: 700;
+    color: $slate-900;
+    margin: 0 0 1.25rem;
+    font-size: $text-lg;
+  }
+
+  // Horizontal scroll wrapper
+  &__table-wrap {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    border-radius: $radius-lg;
+    margin: -0.25rem;
+    padding: 0.25rem;
+
+    @include touch-device {
+      scrollbar-width: none;
+      &::-webkit-scrollbar { display: none; }
+    }
+  }
+
+  table {
+    min-width: 640px;
+    width: 100%;
+    border-collapse: collapse;
+
+    th {
+      text-align: left;
+      padding: 0.75rem 1rem;
+      font-size: $text-xs;
+      font-weight: 600;
+      color: $slate-500;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-bottom: 1px solid $slate-100;
+
+      &:not(:first-child) { text-align: right; }
+    }
+
+    td {
+      padding: 0.75rem 1rem;
+      font-size: $text-sm;
+      color: $slate-700;
+      border-bottom: 1px solid $slate-100;
+      vertical-align: middle;
+
+      &:not(:first-child) { text-align: right; }
+
+      &.content-cell {
+        max-width: 200px;
+
+        @include lg { max-width: 280px; }
+
+        p { @include truncate; margin: 0; }
+      }
+    }
+
+    tr:last-child td { border-bottom: none; }
+
+    @include hover-device {
+      tr:hover td { background: $slate-50; }
+    }
+  }
+
+  &__engagement-badge {
+    display: inline-flex;
+    padding: 0.2rem 0.6rem;
+    border-radius: $radius-full;
+    background: $green-100;
+    color: $green-700;
+    font-size: $text-xs;
+    font-weight: 700;
+  }
+
+  &__empty {
+    @include flex-center;
+    flex-direction: column;
+    padding: 2.5rem;
+    color: $slate-400;
+    gap: 0.5rem;
+    font-size: $text-sm;
+  }
+}
