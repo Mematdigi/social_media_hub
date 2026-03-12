@@ -73,52 +73,63 @@ export const PostCard = ({ post, onDelete }) => {
       </div>
 
       {/* Footer */}
-      <div className="flex items-center justify-between pt-3 border-t border-slate-100">
-        <span className="text-sm text-slate-500">
-          {post.publishedAt 
-            ? `Published ${format(new Date(post.publishedAt), 'MMM d, yyyy')}`
-            : `Created ${format(new Date(post.createdAt), 'MMM d, yyyy')}`
-          }
-        </span>
-        <div className="flex items-center gap-2">
-          <Button
-            data-testid={`edit-post-${post.id}`}
-            variant="ghost"
-            size="sm"
-            className="rounded-xl hover:bg-indigo-50 hover:text-indigo-600"
-            onClick={() => navigate(`/posts/${post.id}/edit`)}
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between pt-3 border-t border-slate-100 gap-3 sm:gap-0">
+  {/* Date Text */}
+  <span className="text-xs sm:text-sm text-slate-500">
+    {post.publishedAt 
+      ? `Published ${format(new Date(post.publishedAt), 'MMM d, yyyy')}`
+      : `Created ${format(new Date(post.createdAt), 'MMM d, yyyy')}`
+    }
+  </span>
+
+  {/* Action Buttons */}
+  <div className="flex items-center gap-2 w-full sm:w-auto">
+    <Button
+      data-testid={`edit-post-${post.id}`}
+      variant="ghost"
+      size="sm"
+      className="flex-1 sm:flex-none justify-center rounded-xl hover:bg-indigo-50 hover:text-indigo-600"
+      onClick={() => navigate(`/posts/${post.id}/edit`)}
+    >
+      <Pencil className="w-4 h-4 mr-1 sm:mr-2" />
+      Edit
+    </Button>
+    
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button
+          data-testid={`delete-post-${post.id}`}
+          variant="ghost"
+          size="sm"
+          className="flex-1 sm:flex-none justify-center rounded-xl hover:bg-red-50 hover:text-red-600"
+        >
+          <Trash2 className="w-4 h-4 mr-1 sm:mr-2" />
+          Delete
+        </Button>
+      </AlertDialogTrigger>
+      
+      {/* Responsive Dialog Content */}
+      <AlertDialogContent className="rounded-3xl w-[90vw] sm:max-w-[425px]">
+        <AlertDialogHeader>
+          <AlertDialogTitle className="font-heading">Delete Post?</AlertDialogTitle>
+          <AlertDialogDescription>This action cannot be undone.</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter className="flex-col sm:flex-row gap-2 sm:gap-0 mt-2 sm:mt-0">
+          <AlertDialogCancel className="rounded-full w-full sm:w-auto m-0">
+            Cancel
+          </AlertDialogCancel>
+          <AlertDialogAction 
+            onClick={handleDelete} 
+            disabled={deleting} 
+            className="rounded-full bg-red-500 hover:bg-red-600 w-full sm:w-auto"
           >
-            <Pencil className="w-4 h-4 mr-1" />
-            Edit
-          </Button>
-          
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button
-                data-testid={`delete-post-${post.id}`}
-                variant="ghost"
-                size="sm"
-                className="rounded-xl hover:bg-red-50 hover:text-red-600"
-              >
-                <Trash2 className="w-4 h-4 mr-1" />
-                Delete
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent className="rounded-3xl">
-              <AlertDialogHeader>
-                <AlertDialogTitle className="font-heading">Delete Post?</AlertDialogTitle>
-                <AlertDialogDescription>This action cannot be undone.</AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel className="rounded-full">Cancel</AlertDialogCancel>
-                <AlertDialogAction onClick={handleDelete} disabled={deleting} className="rounded-full bg-red-500 hover:bg-red-600">
-                  {deleting ? 'Deleting...' : 'Delete'}
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-        </div>
-      </div>
+            {deleting ? 'Deleting...' : 'Delete'}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  </div>
+</div>
     </motion.div>
   );
 };
