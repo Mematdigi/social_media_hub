@@ -19,6 +19,7 @@ export const AccountsProvider = ({ children }) => {
 
     try {
       const response = await accountsAPI.getAll();
+      console.log('fetched accounts in account orovider:', response.data);
       setAccounts(response.data);
     } catch (error) {
       console.error('Failed to fetch accounts:', error);
@@ -47,7 +48,7 @@ export const AccountsProvider = ({ children }) => {
       fetchPlatforms();
     } else {
       setAccounts([]);
-      setPlatforms([]);
+      setPlatforms([]); 
       setLoading(false);
     }
   }, [isAuthenticated, fetchAccounts, fetchPlatforms]);

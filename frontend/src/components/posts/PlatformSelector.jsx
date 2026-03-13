@@ -11,8 +11,10 @@ export const PlatformSelector = ({ selectedIds = [], onChange }) => {
 
   const handleToggle = (accountId) => {
     if (selectedIds.includes(accountId)) {
+      console.log('selecting account:', selectedIds);
       onChange(selectedIds.filter((id) => id !== accountId));
     } else {
+      console.log('deselecting account:', accountId);
       onChange([...selectedIds, accountId]);
     }
   };
@@ -21,7 +23,7 @@ export const PlatformSelector = ({ selectedIds = [], onChange }) => {
     if (selectedIds.length === accounts.length) {
       onChange([]);
     } else {
-      onChange(accounts.map((acc) => acc.id));
+      onChange(accounts.map((acc) => console.log(acc.id)));
     }
   };
 

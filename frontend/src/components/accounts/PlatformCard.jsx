@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { Check, X, Users, ExternalLink } from 'lucide-react';
+import { Check, X, Users, ExternalLink, Loader2, AlertCircle } from 'lucide-react';
 import { PlatformIcon } from './PlatformIcon';
 import { Badge } from '../common/Badge';
 import { Button } from '../ui/button';
@@ -17,24 +17,125 @@ import {
 import { getPlatformConfig } from '../../utils/platformConfig';
 import { cn } from '../../lib/utils';
 
-const API_URL = process.env.REACT_APP_BACKEND_URL || process.env.API_URL || 'http://localhost:5000';
-export const PlatformCard = ({ 
-  platform, 
-  connected = false, 
+const API_URL = process.env.APP_URL || 'http://localhost:5000';
+
+export const PlatformCard = ({
+  platform,
+  connected = false,
   account = null,
   oauthSupported = true,
-  onDisconnect 
+  onDisconnect,
+  onConnected
 }) => {
   const [showDisconnectDialog, setShowDisconnectDialog] = useState(false);
-  const [disconnecting, setDisconnecting] = useState(false);
+  const [disconnecting, setDisconnecting]               = useState(false);
+  const [connecting, setConnecting]                     = useState(false);
+  const [connectError, setConnectError]                 = useState('');
+
   const config = getPlatformConfig(platform);
 
+  const getAuthToken = () => localStorage.getItem('socialhub_token');
+
+  const getUserId = () => {
+    const token = getAuthToken();
+    if (!token) return null;
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1]));
+      return payload._id || payload.id || payload.userId || null;
+    } catch {
+      return null;
+    }
+  };
+
+  // ─────────────────────────────────────────────
+  // Separate async function — NOT passed to FB.login
+  // ─────────────────────────────────────────────
+  const saveTokenToBackend = async (accessToken) => {
+  const token = getAuthToken();
+  const userId = getUserId(); // already have this function
+  console.log('Saving token to backend for userId:', token);
+  const res = await fetch(`${API_URL}/api/accounts/connect/facebook/token`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    },
+    body: JSON.stringify({ 
+      accessToken,
+      userId
+    })
+  });
+  return await res.json();
+};
+
+  // ─────────────────────────────────────────────
+  // ✅ KEY FIX: FB.login callback is regular function
+  // async work is called via .then() AFTER callback
+  // ─────────────────────────────────────────────
+  const connectFacebookSDK = () => {
+    setConnectError('');
+
+    if (!window.FB) {
+      setConnectError('Facebook SDK not loaded. Please refresh the page.');
+      return;
+    }
+
+    setConnecting(true);
+
+    // ✅ Regular function — NOT async
+    window.FB.login(function(response) {
+      if (response.authResponse) {
+        const accessToken = response.authResponse.accessToken;
+        console.log('Facebook login successful, access token:', accessToken);
+
+        // ✅ Async work done outside callback using .then()
+        saveTokenToBackend(accessToken)
+          .then((data) => {
+            if (data.success) {
+              if (onConnected) {
+                onConnected('facebook');
+              } else {
+                window.location.href = '/accounts?connected=facebook';
+              }
+            } else {
+              setConnectError(data.message || 'Failed to connect Facebook');
+            }
+          })
+          .catch(() => {
+            setConnectError('Network error. Please try again.');
+          })
+          .finally(() => {
+            setConnecting(false);
+          });
+
+      } else {
+        setConnecting(false);
+        setConnectError('Login was cancelled.');
+      }
+    }, {
+scope: 'public_profile,email,pages_show_list,pages_read_engagement'
+    });
+  };
+
+  // ─────────────────────────────────────────────
+  // OAuth redirect for all other platforms
+  // ─────────────────────────────────────────────
+  const connectOAuth = () => {
+    setConnectError('');
+    const userId = getUserId();
+    if (!userId) {
+      setConnectError('You must be logged in.');
+      return;
+    }
+    window.location.href = `${API_URL}/api/accounts/oauth/${platform}?user_id=${userId}`;
+  };
+
   const handleConnect = () => {
-      const token = localStorage.getItem('token'); // your JWT token key
-      const user = localStorage.getItem('user'); // your user ID key
-      const userId = user ? JSON.parse(user).id : null;
-    // Redirect to OAuth flow
-window.location.href = `${API_URL}/api/accounts/oauth/${platform}?user_id=${userId}`;
+    if (platform === 'facebook') {
+      connectFacebookSDK();
+    } else {
+      connectOAuth();
+    }
   };
 
   const handleDisconnect = async () => {
@@ -49,8 +150,9 @@ window.location.href = `${API_URL}/api/accounts/oauth/${platform}?user_id=${user
   };
 
   const formatFollowers = (count) => {
+    if (!count) return '0';
     if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M`;
-    if (count >= 1000) return `${(count / 1000).toFixed(1)}K`;
+    if (count >= 1000)    return `${(count / 1000).toFixed(1)}K`;
     return count.toString();
   };
 
@@ -62,10 +164,10 @@ window.location.href = `${API_URL}/api/accounts/oauth/${platform}?user_id=${user
         className={cn(
           'bg-white rounded-3xl border-2 p-5 transition-all duration-200',
           'shadow-card hover:shadow-card-hover',
-          connected 
-            ? 'border-green-200' 
-            : oauthSupported 
-            ? 'border-slate-100 hover:border-indigo-200' 
+          connected
+            ? 'border-green-200'
+            : oauthSupported
+            ? 'border-slate-100 hover:border-indigo-200'
             : 'border-slate-100 opacity-60'
         )}
       >
@@ -91,16 +193,27 @@ window.location.href = `${API_URL}/api/accounts/oauth/${platform}?user_id=${user
               <img
                 src={account.profilePicture}
                 alt={account.accountName}
-                className="w-6 h-6 rounded-full"
+                className="w-6 h-6 rounded-full object-cover"
+                onError={(e) => {
+                  e.target.src = `https://api.dicebear.com/7.x/initials/svg?seed=${platform}`;
+                }}
               />
               <span className="text-sm text-slate-600 truncate">
                 {account.accountName}
               </span>
             </div>
+
             <div className="flex items-center gap-1 text-sm text-slate-500 mb-4">
               <Users className="w-4 h-4" />
               <span>{formatFollowers(account.followers)} followers</span>
             </div>
+
+            {platform === 'facebook' && account.pages?.length > 0 && (
+              <div className="text-xs text-slate-400 mb-3">
+                📄 {account.pages.length} page{account.pages.length > 1 ? 's' : ''} connected
+              </div>
+            )}
+
             <Button
               data-testid={`disconnect-${platform}`}
               variant="outline"
@@ -113,14 +226,33 @@ window.location.href = `${API_URL}/api/accounts/oauth/${platform}?user_id=${user
             </Button>
           </>
         ) : oauthSupported ? (
-          <Button
-            data-testid={`connect-${platform}`}
-            className="w-full mt-4 rounded-full bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white shadow-button"
-            onClick={handleConnect}
-          >
-            <ExternalLink className="w-4 h-4 mr-2" />
-            Connect
-          </Button>
+          <>
+            {connectError && (
+              <div className="flex items-center gap-1 text-xs text-red-500 mt-2 mb-1">
+                <AlertCircle className="w-3 h-3 flex-shrink-0" />
+                <span>{connectError}</span>
+              </div>
+            )}
+
+            <Button
+              data-testid={`connect-${platform}`}
+              disabled={connecting}
+              className="w-full mt-4 rounded-full bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white shadow-button disabled:opacity-60"
+              onClick={handleConnect}
+            >
+              {connecting ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Connecting...
+                </>
+              ) : (
+                <>
+                  <ExternalLink className="w-4 h-4 mr-2" />
+                  Connect
+                </>
+              )}
+            </Button>
+          </>
         ) : (
           <p className="text-sm text-slate-400 mt-2">
             OAuth integration coming soon

@@ -20,6 +20,7 @@ export const PostForm = ({ initialData = null, onSubmit, loading = false }) => {
 
   useEffect(() => {
     if (initialData) {
+      console.log('Initializing form with data:', initialData);
       setContent(initialData.content || '');
       setAccountIds(initialData.accountIds || []);
       setMediaUrls(initialData.mediaUrls?.length > 0 ? initialData.mediaUrls : ['']);

@@ -36,6 +36,7 @@ export const AuthProvider = ({ children }) => {
     const { token: newToken, user: userData } = response.data;
     
     localStorage.setItem('socialhub_token', newToken);
+    localStorage.setItem('socialhub_user_id', userData.id);
     setToken(newToken);
     setUser(userData);
     
@@ -47,6 +48,7 @@ export const AuthProvider = ({ children }) => {
     const { token: newToken, user: userData } = response.data;
     
     localStorage.setItem('socialhub_token', newToken);
+    localStorage.setItem('socialhub_user_id', userData.id);
     setToken(newToken);
     setUser(userData);
     
@@ -55,6 +57,7 @@ export const AuthProvider = ({ children }) => {
 
   const logout = () => {
     localStorage.removeItem('socialhub_token');
+    localStorage.removeItem('socialhub_user_id');
     setToken(null);
     setUser(null);
   };

@@ -39,6 +39,7 @@ export const usePosts = () => {
     setLoading(true);
     setError(null);
     try {
+      console.log('Creating post with data:', data);
       const response = await postsAPI.create(data);
       setPosts((prev) => [response.data, ...prev]);
       return response.data;
