@@ -117,27 +117,27 @@ export default function Posts() {
         className="flex items-center gap-2 mb-6"
       >
         <Filter className="w-5 h-5 text-slate-400" />
-        <div className="flex gap-2">
-          {filterTabs.map((tab) => (
-            <button
-              key={tab.id}
-              data-testid={`filter-${tab.id}`}
-              onClick={() => setActiveFilter(tab.id)}
-              className={`px-4 py-2 rounded-full font-medium text-sm transition-all ${
-                activeFilter === tab.id
-                  ? 'bg-indigo-100 text-indigo-700'
-                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-              }`}
-            >
-              {tab.label}
-              {tab.id !== 'all' && (
-                <span className="ml-2 text-xs opacity-75">
-                  ({posts.filter((p) => p.status === tab.id).length})
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
+        <div className="flex gap-2 pb-2 sm:pb-0 w-full snap-x [&::-webkit-scrollbar]:hidden">
+  {filterTabs.map((tab) => (
+    <button
+      key={tab.id}
+      data-testid={`filter-${tab.id}`}
+      onClick={() => setActiveFilter(tab.id)}
+      className={`shrink-0 whitespace-nowrap snap-start px-3 sm:px-4 py-1.5 sm:py-2 rounded-full font-medium text-xs sm:text-sm transition-all ${
+        activeFilter === tab.id
+          ? 'bg-indigo-100 text-indigo-700'
+          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+      }`}
+    >
+      {tab.label}
+      {tab.id !== 'all' && (
+        <span className="ml-1 sm:ml-2 text-[10px] sm:text-xs opacity-75">
+          ({posts.filter((p) => p.status === tab.id).length})
+        </span>
+      )}
+    </button>
+  ))}
+</div>
       </motion.div>
 
       {/* Posts List */}

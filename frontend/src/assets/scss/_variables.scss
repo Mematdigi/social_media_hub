@@ -1,0 +1,165 @@
+// ============================================================
+// _variables.scss — Design Tokens & Breakpoints
+// ============================================================
+
+// ── Breakpoints ─────────────────────────────────────────────
+$bp-xs:  480px;   // small phones
+$bp-sm:  640px;   // large phones
+$bp-md:  768px;   // tablets / landscape phones
+$bp-lg:  1024px;  // laptops / small desktops
+$bp-xl:  1280px;  // large desktops
+$bp-2xl: 1536px;  // extra-large screens
+
+// ── Mixins ───────────────────────────────────────────────────
+@mixin xs   { @media (min-width: #{$bp-xs})  { @content; } }
+@mixin sm   { @media (min-width: #{$bp-sm})  { @content; } }
+@mixin md   { @media (min-width: #{$bp-md})  { @content; } }
+@mixin lg   { @media (min-width: #{$bp-lg})  { @content; } }
+@mixin xl   { @media (min-width: #{$bp-xl})  { @content; } }
+@mixin xxl  { @media (min-width: #{$bp-2xl}) { @content; } }
+
+// Max-width mixins (mobile-first overrides when needed)
+@mixin max-xs  { @media (max-width: #{$bp-xs - 1})  { @content; } }
+@mixin max-sm  { @media (max-width: #{$bp-sm - 1})  { @content; } }
+@mixin max-md  { @media (max-width: #{$bp-md - 1})  { @content; } }
+@mixin max-lg  { @media (max-width: #{$bp-lg - 1})  { @content; } }
+
+// Pointer / hover capability
+@mixin hover-device { @media (hover: hover) and (pointer: fine) { @content; } }
+@mixin touch-device { @media (hover: none) and (pointer: coarse) { @content; } }
+
+// ── Colors ───────────────────────────────────────────────────
+// Base palette
+$white:      #ffffff;
+$slate-50:   #f8fafc;
+$slate-100:  #f1f5f9;
+$slate-200:  #e2e8f0;
+$slate-300:  #cbd5e1;
+$slate-400:  #94a3b8;
+$slate-500:  #64748b;
+$slate-600:  #475569;
+$slate-700:  #334155;
+$slate-800:  #1e293b;
+$slate-900:  #0f172a;
+
+// Brand
+$indigo-50:  #eef2ff;
+$indigo-100: #e0e7ff;
+$indigo-500: #6366f1;
+$indigo-600: #4f46e5;
+$indigo-700: #4338ca;
+
+$purple-500: #8b5cf6;
+$purple-600: #7c3aed;
+
+$pink-500:   #ec4899;
+$rose-500:   #f43f5e;
+
+$blue-500:   #3b82f6;
+$cyan-500:   #06b6d4;
+
+$emerald-500: #10b981;
+$teal-500:    #14b8a6;
+
+$green-50:   #f0fdf4;
+$green-100:  #dcfce7;
+$green-500:  #22c55e;
+$green-600:  #16a34a;
+$green-700:  #15803d;
+
+$yellow-100: #fef9c3;
+$yellow-500: #eab308;
+$yellow-700: #a16207;
+
+$amber-500:  #f59e0b;
+
+$red-50:     #fef2f2;
+$red-200:    #fecaca;
+$red-300:    #fca5a5;
+$red-500:    #ef4444;
+$red-600:    #dc2626;
+
+$orange-500: #f97316;
+
+// ── Platform Colors ──────────────────────────────────────────
+$platforms: (
+  "facebook":          #1877F2,
+  "twitter":           #1DA1F2,
+  "instagram":         #E4405F,
+  "linkedin":          #0A66C2,
+  "tiktok":            #000000,
+  "youtube":           #FF0000,
+  "pinterest":         #E60023,
+  "snapchat":          #FFFC00,
+  "reddit":            #FF4500,
+  "tumblr":            #36465D,
+  "telegram":          #0088CC,
+  "whatsapp_business": #25D366,
+  "discord":           #5865F2,
+  "twitch":            #9146FF,
+  "medium":            #000000,
+  "quora":             #B92B27,
+  "vk":                #4C75A3,
+  "weibo":             #E6162D,
+  "threads":           #000000,
+  "mastodon":          #6364FF,
+  "bluesky":           #0085FF,
+  "behance":           #1769FF,
+  "dribbble":          #EA4C89,
+  "github":            #181717,
+  "producthunt":       #DA552F,
+);
+
+// ── Typography ───────────────────────────────────────────────
+$font-heading: 'Outfit', sans-serif;
+$font-body:    'DM Sans', sans-serif;
+
+// Fluid font sizes using clamp()
+$text-xs:   clamp(0.65rem,  1.5vw, 0.75rem);
+$text-sm:   clamp(0.8rem,   2vw,   0.875rem);
+$text-base: clamp(0.875rem, 2.5vw, 1rem);
+$text-lg:   clamp(1rem,     3vw,   1.125rem);
+$text-xl:   clamp(1.1rem,   3.5vw, 1.25rem);
+$text-2xl:  clamp(1.25rem,  4vw,   1.5rem);
+$text-3xl:  clamp(1.5rem,   5vw,   1.875rem);
+$text-4xl:  clamp(1.75rem,  6vw,   2.25rem);
+
+// ── Spacing ──────────────────────────────────────────────────
+$space-xs:  clamp(0.25rem, 1vw,  0.5rem);
+$space-sm:  clamp(0.5rem,  2vw,  1rem);
+$space-md:  clamp(1rem,    3vw,  1.5rem);
+$space-lg:  clamp(1.5rem,  4vw,  2.5rem);
+$space-xl:  clamp(2rem,    6vw,  4rem);
+
+// ── Layout ───────────────────────────────────────────────────
+$sidebar-width:           260px;
+$sidebar-collapsed-width: 72px;
+$bottom-nav-height:       60px;
+
+// ── Border Radius ────────────────────────────────────────────
+$radius-sm:  0.5rem;
+$radius-md:  0.75rem;
+$radius-lg:  1rem;
+$radius-xl:  1.5rem;
+$radius-2xl: 2rem;
+$radius-full: 9999px;
+
+// ── Shadows ──────────────────────────────────────────────────
+$shadow-sm:         0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+$shadow-card:       0 2px 16px rgba(15,23,42,0.06), 0 1px 4px rgba(15,23,42,0.04);
+$shadow-card-hover: 0 8px 30px rgba(15,23,42,0.10), 0 2px 8px rgba(15,23,42,0.06);
+$shadow-button:     0 4px 14px rgba(99,102,241,0.35);
+$shadow-dropdown:   0 10px 40px rgba(15,23,42,0.12), 0 2px 8px rgba(15,23,42,0.06);
+
+// ── Transitions ──────────────────────────────────────────────
+$transition-fast:   0.15s ease;
+$transition-base:   0.2s ease;
+$transition-slow:   0.3s ease;
+
+// ── Z-index scale ────────────────────────────────────────────
+$z-dropdown:  20;
+$z-sticky:    30;
+$z-overlay:   40;
+$z-sidebar:   50;
+$z-modal:     60;
+$z-toast:     100;

@@ -117,29 +117,39 @@ export default function Scheduler() {
               <p className="text-slate-600">Plan and schedule your content</p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            <div className="flex bg-slate-100 rounded-xl p-1">
-              <button
-                onClick={() => setView('calendar')}
-                className={`px-4 py-2 rounded-lg font-medium text-sm transition-all ${view === 'calendar' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-600'}`}
-              >
-                <CalendarIcon className="w-4 h-4 inline mr-2" />Calendar
-              </button>
-              <button
-                onClick={() => setView('list')}
-                className={`px-4 py-2 rounded-lg font-medium text-sm transition-all ${view === 'list' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-600'}`}
-              >
-                <List className="w-4 h-4 inline mr-2" />List
-              </button>
-            </div>
-            <Button
-              data-testid="schedule-post-btn"
-              className="rounded-full bg-gradient-to-r from-indigo-500 to-purple-500 text-white px-6"
-              onClick={() => navigate('/posts/new')}
-            >
-              <Plus className="w-5 h-5 mr-2" />Schedule Post
-            </Button>
-          </div>
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full sm:w-auto">
+  {/* View Toggle (Calendar / List) */}
+  <div className="flex bg-slate-100 rounded-xl p-1 w-full sm:w-auto">
+    <button
+      onClick={() => setView('calendar')}
+      className={`flex items-center justify-center flex-1 sm:flex-none px-2 sm:px-4 py-2 rounded-lg font-medium text-xs sm:text-sm transition-all ${
+        view === 'calendar' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-600 hover:text-slate-900'
+      }`}
+    >
+      <CalendarIcon className="w-4 h-4 mr-1 sm:mr-2" />
+      Calendar
+    </button>
+    <button
+      onClick={() => setView('list')}
+      className={`flex items-center justify-center flex-1 sm:flex-none px-2 sm:px-4 py-2 rounded-lg font-medium text-xs sm:text-sm transition-all ${
+        view === 'list' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-600 hover:text-slate-900'
+      }`}
+    >
+      <List className="w-4 h-4 mr-1 sm:mr-2" />
+      List
+    </button>
+  </div>
+
+  {/* Schedule Post Button */}
+  <Button
+    data-testid="schedule-post-btn"
+    className="rounded-full bg-gradient-to-r from-indigo-500 to-purple-500 text-white px-6 w-full sm:w-auto flex justify-center items-center py-2.5 sm:py-2"
+    onClick={() => navigate('/posts/new')}
+  >
+    <Plus className="w-5 h-5 mr-2" />
+    Schedule Post
+  </Button>
+</div>
         </div>
       </motion.div>
 
@@ -192,66 +202,139 @@ export default function Scheduler() {
         </div>
       ) : (
         <div className="space-y-4">
-          <div className="flex gap-2 mb-6">
-            {['all', 'scheduled', 'published', 'draft', 'failed'].map((f) => (
-              <button
-                key={f}
-                onClick={() => setFilter(f)}
-                className={`px-4 py-2 rounded-full text-sm font-medium transition-all ${filter === f ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
-              >
-                {f.charAt(0).toUpperCase() + f.slice(1)}
-              </button>
-            ))}
+  {/* Filter Tabs (Horizontal Scroll on Mobile) */}
+  <div className="flex gap-2 mb-6 overflow-x-auto pb-2 sm:pb-0 w-full snap-x [&::-webkit-scrollbar]:hidden">
+    {['all', 'scheduled', 'published', 'draft', 'failed'].map((f) => (
+      <button
+        key={f}
+        onClick={() => setFilter(f)}
+        className={`shrink-0 whitespace-nowrap snap-start px-4 py-2 rounded-full text-sm font-medium transition-all ${
+          filter === f ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+        }`}
+      >
+        {f.charAt(0).toUpperCase() + f.slice(1)}
+      </button>
+    ))}
+  </div>
+
+  {posts.length === 0 ? (
+    <div className="bg-white rounded-3xl border border-slate-100 p-10 text-center">
+      <Clock className="w-12 h-12 text-slate-300 mx-auto mb-4" />
+      <p className="text-slate-600">No posts found</p>
+    </div>
+  ) : (
+    /* Table Container (Allows horizontal scrolling of the table on small screens) */
+    <div className="bg-white rounded-3xl border border-slate-100 overflow-hidden">
+  
+  {/* MOBILE VIEW: Card List (Visible on small screens, hidden on md+) */}
+  <div className="block md:hidden divide-y divide-slate-100">
+    {posts.map((post) => (
+      <div key={post.id} className="p-4 space-y-3 hover:bg-slate-50 transition-colors">
+        {/* Top Row: Content & Status Badge */}
+        <div className="flex justify-between items-start gap-3">
+          <p className="text-sm text-slate-700 line-clamp-2 flex-1">{post.content}</p>
+          <div className="shrink-0">
+            <PostStatusBadge status={post.status} />
           </div>
-          {posts.length === 0 ? (
-            <div className="bg-white rounded-3xl border border-slate-100 p-10 text-center">
-              <Clock className="w-12 h-12 text-slate-300 mx-auto mb-4" />
-              <p className="text-slate-600">No posts found</p>
-            </div>
-          ) : (
-            <div className="bg-white rounded-3xl border border-slate-100 overflow-hidden">
-              <table className="w-full">
-                <thead className="bg-slate-50 border-b border-slate-100">
-                  <tr>
-                    <th className="text-left px-6 py-4 text-sm font-medium text-slate-600">Content</th>
-                    <th className="text-left px-6 py-4 text-sm font-medium text-slate-600">Platforms</th>
-                    <th className="text-left px-6 py-4 text-sm font-medium text-slate-600">Scheduled</th>
-                    <th className="text-left px-6 py-4 text-sm font-medium text-slate-600">Status</th>
-                    <th className="text-left px-6 py-4 text-sm font-medium text-slate-600">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {posts.map((post) => (
-                    <tr key={post.id} className="hover:bg-slate-50">
-                      <td className="px-6 py-4 max-w-xs">
-                        <p className="text-sm text-slate-700 truncate">{post.content}</p>
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="flex gap-1">
-                          {post.platforms?.slice(0, 3).map((p) => <PlatformIcon key={p} platform={p} size="sm" />)}
-                          {post.platforms?.length > 3 && <span className="text-xs text-slate-500">+{post.platforms.length - 3}</span>}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 text-sm text-slate-600">
-                        {post.scheduledAt ? format(new Date(post.scheduledAt), 'MMM d, h:mm a') : '-'}
-                      </td>
-                      <td className="px-6 py-4"><PostStatusBadge status={post.status} /></td>
-                      <td className="px-6 py-4">
-                        <div className="flex gap-2">
-                          <Button size="sm" variant="ghost" className="rounded-lg" onClick={() => navigate(`/posts/${post.id}/edit`)}>Edit</Button>
-                          {post.status === 'scheduled' && (
-                            <Button size="sm" variant="ghost" className="rounded-lg text-green-600" onClick={() => handlePublish(post.id)}>Publish</Button>
-                          )}
-                          <Button size="sm" variant="ghost" className="rounded-lg text-red-600" onClick={() => handleDelete(post.id)}>Delete</Button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
         </div>
+
+        {/* Middle Row: Platforms & Date */}
+        <div className="flex justify-between items-center bg-slate-50/50 p-2 rounded-lg">
+          <div className="flex items-center gap-1">
+            {post.platforms?.slice(0, 3).map((p) => (
+              <PlatformIcon key={p} platform={p} size="sm" />
+            ))}
+            {post.platforms?.length > 3 && (
+              <span className="text-xs text-slate-500 font-medium ml-1">
+                +{post.platforms.length - 3}
+              </span>
+            )}
+          </div>
+          <span className="text-xs font-medium text-slate-500">
+            {post.scheduledAt ? format(new Date(post.scheduledAt), 'MMM d, h:mm a') : 'No date set'}
+          </span>
+        </div>
+
+        {/* Bottom Row: Actions */}
+        <div className="flex gap-2 pt-1">
+          <Button 
+            size="sm" 
+            variant="outline" 
+            className="flex-1 rounded-xl text-slate-600" 
+            onClick={() => navigate(`/posts/${post.id}/edit`)}
+          >
+            Edit
+          </Button>
+          {post.status === 'scheduled' && (
+            <Button 
+              size="sm" 
+              variant="outline" 
+              className="flex-1 rounded-xl text-green-600 border-green-200 hover:bg-green-50" 
+              onClick={() => handlePublish(post.id)}
+            >
+              Publish
+            </Button>
+          )}
+          <Button 
+            size="sm" 
+            variant="outline" 
+            className="flex-1 rounded-xl text-red-600 border-red-200 hover:bg-red-50" 
+            onClick={() => handleDelete(post.id)}
+          >
+            Delete
+          </Button>
+        </div>
+      </div>
+    ))}
+  </div>
+
+  {/* DESKTOP VIEW: Traditional Table (Hidden on small screens, visible on md+) */}
+  <div className="hidden md:block overflow-x-auto w-full">
+    <table className="w-full min-w-[800px]">
+      <thead className="bg-slate-50 border-b border-slate-100">
+        <tr>
+          <th className="text-left px-6 py-4 text-sm font-medium text-slate-600">Content</th>
+          <th className="text-left px-6 py-4 text-sm font-medium text-slate-600">Platforms</th>
+          <th className="text-left px-6 py-4 text-sm font-medium text-slate-600">Scheduled</th>
+          <th className="text-left px-6 py-4 text-sm font-medium text-slate-600">Status</th>
+          <th className="text-left px-6 py-4 text-sm font-medium text-slate-600">Actions</th>
+        </tr>
+      </thead>
+      <tbody className="divide-y divide-slate-100">
+        {posts.map((post) => (
+          <tr key={`desktop-${post.id}`} className="hover:bg-slate-50 transition-colors">
+            <td className="px-6 py-4 max-w-xs">
+              <p className="text-sm text-slate-700 truncate">{post.content}</p>
+            </td>
+            <td className="px-6 py-4">
+              <div className="flex gap-1">
+                {post.platforms?.slice(0, 3).map((p) => <PlatformIcon key={p} platform={p} size="sm" />)}
+                {post.platforms?.length > 3 && <span className="text-xs text-slate-500 self-center">+{post.platforms.length - 3}</span>}
+              </div>
+            </td>
+            <td className="px-6 py-4 text-sm text-slate-600 whitespace-nowrap">
+              {post.scheduledAt ? format(new Date(post.scheduledAt), 'MMM d, h:mm a') : '-'}
+            </td>
+            <td className="px-6 py-4">
+              <PostStatusBadge status={post.status} />
+            </td>
+            <td className="px-6 py-4">
+              <div className="flex gap-2">
+                <Button size="sm" variant="ghost" className="rounded-lg px-3" onClick={() => navigate(`/posts/${post.id}/edit`)}>Edit</Button>
+                {post.status === 'scheduled' && (
+                  <Button size="sm" variant="ghost" className="rounded-lg text-green-600 px-3" onClick={() => handlePublish(post.id)}>Publish</Button>
+                )}
+                <Button size="sm" variant="ghost" className="rounded-lg text-red-600 px-3" onClick={() => handleDelete(post.id)}>Delete</Button>
+              </div>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+</div>
+  )}
+</div>
       )}
 
       <style>{`
