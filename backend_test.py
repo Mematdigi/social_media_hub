@@ -165,9 +165,6 @@ class SocialHubAPITester:
             self.log_test("OAuth Flow", False, "No token or user_id available")
             return False
         
-        # Test connecting to Facebook (first platform with OAuth support)
-        platform = "facebook"
-        
         # Simulate OAuth callback directly (since OAuth initiate redirects to external provider)
         success, response = self.make_request(
             'GET', f'accounts/oauth/{platform}/callback?user_id={self.user_id}'

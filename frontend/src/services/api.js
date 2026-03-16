@@ -46,12 +46,16 @@ export const accountsAPI = {
 
 // Posts API
 export const postsAPI = {
-  getAll: (status) => api.get('/posts', { params: { status } }),
-  getOne: (postId) => api.get(`/posts/${postId}`),
-  create: (data) => api.post('/posts', data),
-  update: (postId, data) => api.put(`/posts/${postId}`, data),
-  delete: (postId) => api.delete(`/posts/${postId}`),
-  publish: (postId) => api.post(`/posts/${postId}/publish`),
+  getAll:  (status, platform) => api.get('/posts', { params: { status, platform } }),
+  getOne:  (postId)           => api.get(`/posts/${postId}`),
+  create:  (data)             => api.post('/posts', data),
+  update:  (postId, data)     => api.put(`/posts/${postId}`, data),
+  delete:  (postId, deleteFromPlatform = true) =>
+    api.delete(`/posts/${postId}`, { params: { deleteFromPlatform } }),
+  publish: (postId, selectedPages = {}) =>
+    api.post(`/posts/${postId}/publish`, { selectedPages }),
+  sync:    (platform, accountId) =>
+    api.post('/posts/sync', null, { params: { platform, accountId } }),
 };
 
 // Scheduler API
