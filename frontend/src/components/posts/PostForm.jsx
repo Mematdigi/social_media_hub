@@ -10,18 +10,20 @@ import { Loader } from '../common/Loader';
 import { cn } from '../../lib/utils';
 
 export const PostForm = ({ initialData = null, onSubmit, loading = false }) => {
-  const [content, setContent] = useState('');
-  const [accountIds, setAccountIds] = useState([]);
-  const [mediaUrls, setMediaUrls] = useState(['']);
-  const [status, setStatus] = useState('draft');
+  const [content, setContent]         = useState('');
+  const [accountIds, setAccountIds]   = useState([]);
+  const [selectedPages, setSelectedPages] = useState({}); // { accountId: [pageId, ...] }
+  const [mediaUrls, setMediaUrls]     = useState(['']);
+  const [status, setStatus]           = useState('draft');
   const [scheduleMode, setScheduleMode] = useState('now');
   const [scheduledAt, setScheduledAt] = useState(null);
-  const [errors, setErrors] = useState({});
+  const [errors, setErrors]           = useState({});
 
   useEffect(() => {
     if (initialData) {
       setContent(initialData.content || '');
       setAccountIds(initialData.accountIds || []);
+      setSelectedPages(initialData.selectedPages || {});
       setMediaUrls(initialData.mediaUrls?.length > 0 ? initialData.mediaUrls : ['']);
       setStatus(initialData.status || 'draft');
       if (initialData.scheduledAt) {
@@ -31,10 +33,27 @@ export const PostForm = ({ initialData = null, onSubmit, loading = false }) => {
     }
   }, [initialData]);
 
+  // ── PlatformSelector now returns { accountIds, selectedPages } ──
+  const handlePlatformChange = ({ accountIds: ids, selectedPages: pages }) => {
+    setAccountIds(ids);
+    setSelectedPages(pages);
+  };
+
   const validate = () => {
     const newErrors = {};
     if (!content.trim()) newErrors.content = 'Content is required';
     if (accountIds.length === 0) newErrors.accountIds = 'At least one account must be selected';
+
+    // For page-based accounts (facebook etc.), ensure at least one page is selected
+    const hasPageAccountWithNoPages = accountIds.some((id) => {
+      const pages = selectedPages[id];
+      // If selectedPages has an entry for this account, it must have at least one page
+      return pages !== undefined && pages.length === 0;
+    });
+    if (hasPageAccountWithNoPages) {
+      newErrors.accountIds = 'Please select at least one page for each connected account';
+    }
+
     if (scheduleMode === 'later' && !scheduledAt) newErrors.scheduledAt = 'Please select a date and time';
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -45,11 +64,12 @@ export const PostForm = ({ initialData = null, onSubmit, loading = false }) => {
     if (!validate()) return;
 
     const formData = {
-      content: content.trim(),
+      content:       content.trim(),
       accountIds,
-      mediaUrls: mediaUrls.filter((url) => url.trim()),
-      status: scheduleMode === 'later' ? 'scheduled' : status,
-      scheduledAt: scheduleMode === 'later' ? scheduledAt : null,
+      selectedPages, // ← passed to backend
+      mediaUrls:     mediaUrls.filter((url) => url.trim()),
+      status:        scheduleMode === 'later' ? 'scheduled' : status,
+      scheduledAt:   scheduleMode === 'later' ? scheduledAt : null,
     };
 
     await onSubmit(formData);
@@ -104,8 +124,14 @@ export const PostForm = ({ initialData = null, onSubmit, loading = false }) => {
       {/* Platform Selector */}
       <div className="space-y-2">
         <Label className="text-base font-medium">Post to Accounts</Label>
-        <PlatformSelector selectedIds={accountIds} onChange={setAccountIds} />
-        {errors.accountIds && <span className="text-sm text-red-500">{errors.accountIds}</span>}
+        <PlatformSelector
+          selectedIds={accountIds}
+          selectedPages={selectedPages}
+          onChange={handlePlatformChange}
+        />
+        {errors.accountIds && (
+          <span className="text-sm text-red-500">{errors.accountIds}</span>
+        )}
       </div>
 
       {/* Media URLs */}
@@ -124,14 +150,26 @@ export const PostForm = ({ initialData = null, onSubmit, loading = false }) => {
                 placeholder="https://example.com/image.jpg"
                 className="flex-1 rounded-xl bg-slate-50 border-transparent focus:bg-white focus:border-indigo-500"
               />
-              <Button type="button" variant="ghost" size="icon" className="rounded-xl hover:bg-red-50 hover:text-red-600" onClick={() => removeMediaUrl(index)}>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="rounded-xl hover:bg-red-50 hover:text-red-600"
+                onClick={() => removeMediaUrl(index)}
+              >
                 <X className="w-4 h-4" />
               </Button>
             </div>
           ))}
         </div>
         {mediaUrls.length < 4 && (
-          <Button type="button" variant="ghost" size="sm" className="rounded-xl text-indigo-600 hover:bg-indigo-50" onClick={addMediaUrl}>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="rounded-xl text-indigo-600 hover:bg-indigo-50"
+            onClick={addMediaUrl}
+          >
             <Plus className="w-4 h-4 mr-1" />
             Add another URL
           </Button>
@@ -173,7 +211,9 @@ export const PostForm = ({ initialData = null, onSubmit, loading = false }) => {
         {scheduleMode === 'later' && (
           <div className="mt-4">
             <SchedulePicker value={scheduledAt} onChange={setScheduledAt} />
-            {errors.scheduledAt && <span className="text-sm text-red-500 mt-2 block">{errors.scheduledAt}</span>}
+            {errors.scheduledAt && (
+              <span className="text-sm text-red-500 mt-2 block">{errors.scheduledAt}</span>
+            )}
           </div>
         )}
 
