@@ -15,6 +15,7 @@ const authMiddleware = async (req, res, next) => {
     const decoded = jwt.verify(token, JWT_SECRET);
     
     const user = await User.findOne({ id: decoded.user_id }).select('-password -_id -__v');
+    
     if (!user) {
       return res.status(401).json({ detail: 'User not found' });
     }
@@ -22,6 +23,7 @@ const authMiddleware = async (req, res, next) => {
     req.user = user;
     next();
   } catch (error) {
+    console.log('Auth error:', error.message); // ← ADD THIS
     if (error.name === 'TokenExpiredError') {
       return res.status(401).json({ detail: 'Token has expired' });
     }
