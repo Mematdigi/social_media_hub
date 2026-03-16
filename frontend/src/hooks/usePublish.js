@@ -1,24 +1,20 @@
-// hooks/usePublish.js
 import { useState, useCallback } from 'react';
 import { postsAPI } from '../services/api';
 
-/**
- * Handles post publishing across platforms.
- * Works with any platform — just pass the right accountIds.
- */
 export const usePublish = () => {
-  const [publishing, setPublishing] = useState(false);
+  const [publishing, setPublishing]     = useState(false);
   const [publishError, setPublishError] = useState(null);
   const [publishResults, setPublishResults] = useState(null);
 
-  // Publish a post that's already created (by postId)
-  const publishPost = useCallback(async (postId) => {
+  // Publish an already-created post (draft → published)
+  // Pass selectedPages so the right Facebook pages are targeted
+  const publishPost = useCallback(async (postId, selectedPages = {}) => {
     setPublishing(true);
     setPublishError(null);
     setPublishResults(null);
     try {
-      const response = await postsAPI.publish(postId);
-      setPublishResults(response.data);
+      const response = await postsAPI.publish(postId, selectedPages);
+      setPublishResults(response.data.platformResults);
       return response.data;
     } catch (err) {
       const msg = err.response?.data?.detail || 'Failed to publish post';
@@ -35,7 +31,8 @@ export const usePublish = () => {
     setPublishError(null);
     setPublishResults(null);
     try {
-      // status: 'published' triggers immediate publish in your backend
+      // status: 'published' triggers immediate publish in the backend
+      // selectedPages flows through data untouched
       const response = await postsAPI.create({ ...data, status: 'published' });
       setPublishResults(response.data.platformResults);
       return response.data;
@@ -48,13 +45,18 @@ export const usePublish = () => {
     }
   }, []);
 
-  // Per-platform result helpers
   const getResultForPlatform = useCallback((platform) => {
     return publishResults?.find(r => r.platform === platform) || null;
   }, [publishResults]);
 
+  // Per-page results for Facebook
+  const getPageResults = useCallback((platform) => {
+    const result = publishResults?.find(r => r.platform === platform);
+    return result?.pages || [];
+  }, [publishResults]);
+
   const hasFailures = publishResults?.some(r => r.status === 'failed') ?? false;
-  const allFailed = publishResults?.every(r => r.status === 'failed') ?? false;
+  const allFailed   = publishResults?.every(r => r.status === 'failed') ?? false;
 
   return {
     publishing,
@@ -63,6 +65,7 @@ export const usePublish = () => {
     publishPost,
     createAndPublish,
     getResultForPlatform,
+    getPageResults,
     hasFailures,
     allFailed,
   };
