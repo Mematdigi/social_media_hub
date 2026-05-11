@@ -7,7 +7,8 @@ import { Checkbox } from '../ui/checkbox';
 import { cn } from '../../lib/utils';
 
 // Platforms that have sub-pages to select
-const PAGE_PLATFORMS = ['facebook', 'linkedin'];
+const PAGE_PLATFORMS = ['facebook', 'linkedin', 'instagram'];
+
 
 // ─── PlatformSelector ─────────────────────────────────────────────────────────
 // Props:

@@ -99,9 +99,9 @@ router.get('/', authMiddleware, async (req, res) => {
     });
 
     const fbAccounts = allAccounts.filter(a => a.platform === 'facebook');
+    const igAccounts = allAccounts.filter(a => a.platform === 'instagram'); // ← NEW
 
-    // ── Step 3: fetch live posts from every Facebook page ──────────────────
-    // Map: platformPostId → full post data including page info
+    // ── Step 3a: fetch live posts from every Facebook page ─────────────────
     const fbPostMetaMap = {};
 
     for (const account of fbAccounts) {
@@ -139,13 +139,58 @@ router.get('/', authMiddleware, async (req, res) => {
 
           logger.info('🔄', `Fetched ${fbRes.data?.data?.length || 0} posts from FB page "${page.pageName}"`);
         } catch (err) {
-          logger.warn(`FB page "${page.pageName}" fetch failed: ${err.response?.data?.error?.message || err.message}`);
+          logger.info(`FB page "${page.pageName}" fetch failed: ${err.response?.data?.error?.message || err.message}`);
         }
       }
     }
 
-    // ── Step 4: build a set of platformPostIds already in DB ──────────────
-    // So we don't create duplicates in the response
+    // ── Step 3b: fetch live posts from every Instagram account ────────────
+    const igPostMetaMap = {};
+
+    for (const account of igAccounts) {
+      const page = (account.pages || [])[0]; // IG always has one linked FB page
+      if (!page?.pageAccessToken) continue;
+
+      try {
+        const pageToken   = decrypt(page.pageAccessToken);
+        const igAccountId = account.accountId; // IG Business account ID
+
+        const igRes = await axios.get(
+          `https://graph.facebook.com/v19.0/${igAccountId}/media`,
+          {
+            params: {
+              fields:       'id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count',
+              limit:        100,
+              access_token: pageToken,
+            },
+          }
+        );
+
+        for (const igPost of igRes.data?.data || []) {
+          igPostMetaMap[igPost.id] = {
+            accountId:    account.id,
+            accountName:  account.accountName,
+            igUsername:   account.igUsername || '',
+            pageId:       page.pageId,
+            pageName:     page.pageName,
+            content:      igPost.caption    || '',
+            mediaType:    igPost.media_type || 'IMAGE',   // IMAGE | VIDEO | CAROUSEL_ALBUM
+            mediaUrls:    igPost.media_url  ? [igPost.media_url] : [],
+            thumbnailUrl: igPost.thumbnail_url || null,   // for VIDEO/REELS
+            createdTime:  igPost.timestamp,
+            permalinkUrl: igPost.permalink  || null,
+            likes:        igPost.like_count     || 0,
+            comments:     igPost.comments_count || 0,
+          };
+        }
+
+        logger.info('🔄', `Fetched ${igRes.data?.data?.length || 0} posts from IG @${account.igUsername}`);
+      } catch (err) {
+        logger.info(`IG account "@${account.igUsername}" fetch failed: ${err.response?.data?.error?.message || err.message}`);
+      }
+    }
+
+    // ── Step 4: build set of platformPostIds already in DB ────────────────
     const dbPlatformPostIds = new Set();
     for (const post of dbPosts) {
       for (const r of post.platformResults || []) {
@@ -153,14 +198,13 @@ router.get('/', authMiddleware, async (req, res) => {
       }
     }
 
-    // ── Step 5: for FB posts not yet in DB — save them + collect for response
+    // ── Step 5a: save new Facebook posts not yet in DB ────────────────────
     const newPosts = [];
 
     for (const [fbPostId, meta] of Object.entries(fbPostMetaMap)) {
-      if (dbPlatformPostIds.has(fbPostId)) continue; // already tracked
-      if (!meta.content.trim()) continue;            // skip empty posts
+      if (dbPlatformPostIds.has(fbPostId)) continue;
+      if (!meta.content.trim()) continue;
 
-      // Save to DB so future requests don't need to re-fetch
       const postId   = uuidv4();
       const postTime = new Date(meta.createdTime);
 
@@ -194,21 +238,69 @@ router.get('/', authMiddleware, async (req, res) => {
 
       try {
         await newPost.save();
-        dbPlatformPostIds.add(fbPostId); // prevent duplicate in same request
+        dbPlatformPostIds.add(fbPostId);
         newPosts.push(newPost);
         logger.info('💾', `Auto-saved FB post ${fbPostId} from page "${meta.pageName}"`);
       } catch (err) {
-        // Duplicate key — already saved in a concurrent request, skip
         if (err.code !== 11000) {
-          logger.warn(`Could not save FB post ${fbPostId}: ${err.message}`);
+          logger.info(`Could not save FB post ${fbPostId}: ${err.message}`);
         }
       }
     }
 
-    // ── Step 6: reload all posts from DB (now includes newly saved ones) ───
+    // ── Step 5b: save new Instagram posts not yet in DB ───────────────────
+    for (const [igPostId, meta] of Object.entries(igPostMetaMap)) {
+      if (dbPlatformPostIds.has(igPostId)) continue;
+      // Skip posts with no caption AND no media (completely empty)
+      if (!meta.content.trim() && !meta.mediaUrls.length) continue;
+
+      const postId   = uuidv4();
+      const postTime = new Date(meta.createdTime);
+
+      const newIGPost = new Post({
+        id:                 postId,
+        userId:             req.user.id,
+        content:            meta.content,
+        mediaUrls:          meta.mediaUrls,
+        mediaType:          meta.mediaType,      // IMAGE | VIDEO | CAROUSEL_ALBUM
+        accountIds:         [meta.accountId],
+        platforms:          ['instagram'],
+        status:             'published',
+        publishedAt:        postTime,
+        syncedFromPlatform: true,
+        platformResults: [{
+          platform:       'instagram',
+          accountId:      meta.accountId,
+          platformPostId: igPostId,
+          status:         'published',
+          publishedAt:    postTime,
+          pages: [{
+            pageId:   meta.pageId,
+            pageName: meta.pageName,
+            postId:   igPostId,
+            status:   'published',
+            error:    null,
+          }],
+        }],
+        createdAt: postTime,
+        updatedAt: new Date(),
+      });
+
+      try {
+        await newIGPost.save();
+        dbPlatformPostIds.add(igPostId);
+        logger.info('💾', `Auto-saved IG post ${igPostId} from @${meta.igUsername}`);
+      } catch (err) {
+        if (err.code !== 11000) {
+          logger.warn(`Could not save IG post ${igPostId}: ${err.message}`);
+        }
+      }
+    }
+
+    // ── Step 6: reload all posts from DB ──────────────────────────────────
     const allPosts = await Post.find(query).sort({ createdAt: -1 }).select('-_id -__v');
 
-    // ── Step 7: build final response with live FB metadata merged in ────────
+    // ── Step 7: build final response — enrich with live FB + IG metadata ──
     const result = [];
 
     for (const post of allPosts) {
@@ -219,23 +311,29 @@ router.get('/', authMiddleware, async (req, res) => {
         if (acc) accounts.push(safeAccount(acc));
       }
 
-      // Enrich platformResults with live FB metadata
+      // Enrich platformResults — picks FB or IG meta based on which map has the ID
       const enrichedResults = (post.platformResults || []).map(r => {
-        const meta = r.platformPostId ? (fbPostMetaMap[r.platformPostId] || null) : null;
+        const fbMeta = r.platformPostId ? (fbPostMetaMap[r.platformPostId] || null) : null;
+        const igMeta = r.platformPostId ? (igPostMetaMap[r.platformPostId] || null) : null;
+        const meta   = fbMeta || igMeta; // one will always be null
 
         return {
           platform:       r.platform,
           accountId:      r.accountId,
           platformPostId: r.platformPostId || null,
           status:         r.status,
-          error:          r.error   || null,
+          error:          r.error          || null,
           publishedAt:    r.publishedAt ? new Date(r.publishedAt).toISOString() : null,
-          // Live data from platform
+          // Shared live data
           pageName:       meta?.pageName     || null,
           pageId:         meta?.pageId       || null,
           permalinkUrl:   meta?.permalinkUrl || null,
           likes:          meta?.likes        ?? null,
           comments:       meta?.comments     ?? null,
+          // Instagram-only fields (null for Facebook posts)
+          mediaType:      igMeta?.mediaType    || null,
+          thumbnailUrl:   igMeta?.thumbnailUrl || null,
+          igUsername:     igMeta?.igUsername   || null,
           pages: (r.pages || []).map(p => ({
             pageId:   p.pageId,
             pageName: p.pageName,
@@ -258,6 +356,7 @@ router.get('/', authMiddleware, async (req, res) => {
     res.status(500).json({ detail: 'Failed to get posts' });
   }
 });
+
 // ─── GET /api/posts/:postId ───────────────────────────────────────────────────
 router.get('/:postId', authMiddleware, async (req, res) => {
   try {
@@ -279,16 +378,7 @@ router.get('/:postId', authMiddleware, async (req, res) => {
   }
 });
 
-// ─── POST /api/posts ──────────────────────────────────────────────────────────
-// Body:
-//   content       string   required
-//   accountIds    string[] required   — SocialAccount.id values
-//   mediaUrls     string[] optional
-//   status        string   optional   'draft' | 'published'
-//   scheduledAt   ISO8601  optional
-//   selectedPages object   optional   { "<accountId>": ["<pageId>", ...] }
-//                                     Override which pages to post to per account.
-//                                     If omitted, posts to all isSelected pages.
+                                //  If omitted, posts to all isSelected pages.
 router.post('/', authMiddleware, async (req, res) => {
   try {
     const {
@@ -365,6 +455,7 @@ router.post('/', authMiddleware, async (req, res) => {
   }
 });
 
+
 // ─── DELETE /api/posts/:postId ────────────────────────────────────────────────
 router.delete('/:postId', authMiddleware, async (req, res) => {
   try {
@@ -372,16 +463,15 @@ router.delete('/:postId', authMiddleware, async (req, res) => {
     if (!post) return res.status(404).json({ detail: 'Post not found' });
 
     const deleteFromPlatform = req.query.deleteFromPlatform !== 'false';
-    const platformErrors = [];
+    const platformErrors     = [];
 
     if (deleteFromPlatform && post.status === 'published') {
       for (const result of post.platformResults || []) {
         if (result.status !== 'published' || !result.platformPostId) continue;
-
         try {
           const account = await SocialAccount.findOne({ id: result.accountId });
-          if (!account) continue;
-
+          if (!account) continue;  
+          // ── Facebook delete ──────────────────────────────────────────────
           if (result.platform === 'facebook') {
             const pageToken = getPageTokenForPost(account, result.platformPostId);
             if (!pageToken) {
@@ -395,10 +485,29 @@ router.delete('/:postId', authMiddleware, async (req, res) => {
             );
             logger.info('📘', `Deleted FB post ${result.platformPostId}`);
           }
+
+          // ── Instagram delete ─────────────────────────────────────────────
+          // IG Graph API: DELETE /{ig-media-id} using page access token
+          if (result.platform === 'instagram') {
+            const page = (account.pages || [])[0];
+            if (!page?.pageAccessToken) {
+              platformErrors.push({ platform: 'instagram', error: 'Page token not found' });
+              continue;
+            }
+
+            const pageToken = decrypt(page.pageAccessToken);
+
+            await axios.delete(
+              `https://graph.facebook.com/v19.0/${result.platformPostId}`,
+              { params: { access_token: pageToken } }
+            );
+            logger.info('📷', `Deleted IG post ${result.platformPostId}`);
+          }
+
         } catch (err) {
-          const fbError = err.response?.data?.error?.message || err.message;
-          logger.warn(`Could not delete from ${result.platform}: ${fbError}`);
-          platformErrors.push({ platform: result.platform, error: fbError });
+          const errMsg = err.response?.data?.error?.message || err.message;
+          logger.info(`Could not delete from ${result.platform}: ${errMsg}`);
+          platformErrors.push({ platform: result.platform, error: errMsg });
         }
       }
     }
@@ -407,7 +516,7 @@ router.delete('/:postId', authMiddleware, async (req, res) => {
     logger.info('📝', `Post ${req.params.postId} deleted`);
 
     res.json({
-      message: 'Post deleted successfully',
+      message:        'Post deleted successfully',
       platformErrors: platformErrors.length > 0 ? platformErrors : undefined,
     });
   } catch (error) {
@@ -416,6 +525,7 @@ router.delete('/:postId', authMiddleware, async (req, res) => {
   }
 });
 
+
 // ─── PUT /api/posts/:postId ───────────────────────────────────────────────────
 router.put('/:postId', authMiddleware, async (req, res) => {
   try {
@@ -423,15 +533,20 @@ router.put('/:postId', authMiddleware, async (req, res) => {
     if (!post) return res.status(404).json({ detail: 'Post not found' });
 
     const {
-      content, accountIds, mediaUrls,
-      status, scheduledAt,
+      content,
+      accountIds,
+      mediaUrls,
+      mediaType,                // ← NEW: 'IMAGE' | 'REELS' | 'CAROUSEL'
+      status,
+      scheduledAt,
       syncToPlatform = true
     } = req.body;
 
     const updateData = { updatedAt: new Date() };
 
-    if (content !== undefined)   updateData.content   = content;
+    if (content   !== undefined) updateData.content   = content;
     if (mediaUrls !== undefined) updateData.mediaUrls = mediaUrls;
+    if (mediaType !== undefined) updateData.mediaType = mediaType; // ← NEW
 
     if (accountIds !== undefined) {
       updateData.accountIds = accountIds;
@@ -450,9 +565,8 @@ router.put('/:postId', authMiddleware, async (req, res) => {
 
     if (status !== undefined) updateData.status = status;
 
-    // ── Sync content edit to Facebook if post is live ──────────────────────
+    // ── Sync content edits to live platforms ──────────────────────────────
     if (
-      syncToPlatform &&
       content !== undefined &&
       content !== post.content &&
       post.status === 'published'
@@ -461,13 +575,13 @@ router.put('/:postId', authMiddleware, async (req, res) => {
         if (result.status !== 'published' || !result.platformPostId) continue;
 
         try {
-          const account = await SocialAccount.findOne({ id: result.accountId });
+          const account = await SocialAccount.findOne({ accountId: result.accountId });
           if (!account) continue;
 
+          // ── Facebook: update caption via POST /{post-id} ───────────────
           if (result.platform === 'facebook') {
             const pageToken = getPageTokenForPost(account, result.platformPostId);
             if (!pageToken) {
-              logger.warn(`No page token found for FB post ${result.platformPostId}`);
               continue;
             }
 
@@ -477,15 +591,69 @@ router.put('/:postId', authMiddleware, async (req, res) => {
             );
             logger.info('📘', `Updated FB post ${result.platformPostId}`);
           }
+
+          // ── Instagram: update caption via POST /{ig-media-id} ──────────
+          // IG Graph API only supports caption edits on published media
+          // Media itself (image/video) cannot be replaced — caption only
+       // ── Instagram: update caption via POST /{ig-media-id} ──────────
+// ── Instagram: update caption ────────────────────────────────────
+console.log('📷', `Attempting to update IG caption for post ${result.platform}`);
+if (result.platform === 'instagram') {
+  const page = (account.pages || [])[0];
+  if (!page?.pageAccessToken) continue;
+  const pageToken = decrypt(page.pageAccessToken);
+
+  // ── BEFORE ───────────────────────────────────────────────────
+  const beforeRes = await axios.get(
+    `https://graph.facebook.com/v19.0/${result.platformPostId}`,
+    { params: { fields: 'id,caption', access_token: pageToken } }
+  );
+  logger.info('📷', `BEFORE: "${beforeRes.data.caption}"`);
+  logger.info('📷', `SENDING: "${content}"`);
+  logger.info('📷', `ARE THEY SAME?: ${beforeRes.data.caption === content}`);
+
+  // ── UPDATE ───────────────────────────────────────────────────
+  const updateRes = await axios.post(
+    `https://graph.facebook.com/v19.0/${result.platformPostId}`,
+    null,
+    {
+      params: {
+        caption:         content,
+        comment_enabled: true,
+        access_token:    pageToken
+      }
+    }
+  );
+  logger.info('📷', `UPDATE RESPONSE: ${JSON.stringify(updateRes.data)}`);
+
+  // ── AFTER — wait 3s ──────────────────────────────────────────
+  await new Promise(r => setTimeout(r, 3000));
+
+  const afterRes = await axios.get(
+    `https://graph.facebook.com/v19.0/${result.platformPostId}`,
+    { params: { fields: 'id,caption', access_token: pageToken } }
+  );
+  logger.info('📷', `AFTER:  "${afterRes.data.caption}"`);
+
+  // ── KEY CHECK ────────────────────────────────────────────────
+  logger.info('📷', `PLATFORM POST ID IN DB:   ${result.platformPostId}`);
+  logger.info('📷', `PLATFORM POST ID IN API:  ${afterRes.data.id}`);
+  logger.info('📷', `IDs MATCH?: ${result.platformPostId === afterRes.data.id}`);
+
+  if (afterRes.data.caption === content) {
+    logger.info('📷', `✅ CONFIRMED — caption updated on Instagram`);
+  } else {
+    logger.info(`⚠️ NOT UPDATED — caption unchanged after API call`);
+  }
+}
         } catch (err) {
-          const fbError = err.response?.data?.error?.message || err.message;
-          logger.warn(`Could not update FB post: ${fbError}`);
-          // Don't fail the whole request — content is still saved in DB
+          const errMsg = err.response?.data?.error?.message || err.message;
+          // Non-fatal — DB is still updated below
         }
       }
     }
 
-    await Post.updateOne({ id: req.params.postId }, updateData);
+    // await Post.updateOne({ id: req.params.postId }, updateData);
     const updatedPost = await Post.findOne({ id: req.params.postId }).select('-_id -__v');
 
     const accounts = [];
@@ -496,7 +664,13 @@ router.put('/:postId', authMiddleware, async (req, res) => {
     }
 
     logger.info('📝', `Post ${req.params.postId} updated`);
+
+    // Verify caption was actually updated
+
+
+    
     res.json(formatPost(updatedPost, accounts));
+
   } catch (error) {
     logger.error('Failed to update post', error);
     res.status(500).json({ detail: 'Failed to update post' });

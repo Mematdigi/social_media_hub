@@ -1,19 +1,23 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { ArrowLeft, Edit3, RefreshCw, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, Edit3, RefreshCw, AlertTriangle, Camera, ExternalLink } from 'lucide-react';
 import { PageWrapper } from '../components/layout/PageWrapper';
 import { PostForm } from '../components/posts/PostForm';
 import { PageLoader } from '../components/common/Loader';
 import { Button } from '../components/ui/button';
 import { usePosts } from '../hooks/usePosts';
 import { toast } from 'sonner';
-import { cn } from '../lib/utils';
+
+// Meta Business Suite URLs
+const META_BUSINESS_SUITE_URL = 'https://business.facebook.com/latest/home';
+const META_INSTAGRAM_POSTS_URL = 'https://business.facebook.com/latest/posts/published_posts';
 
 export default function EditPost() {
   const navigate = useNavigate();
-  const { id } = useParams();
+  const { id }   = useParams();
   const { fetchPost, updatePost } = usePosts();
+
   const [post, setPost]         = useState(null);
   const [loading, setLoading]   = useState(true);
   const [saving, setSaving]     = useState(false);
@@ -34,15 +38,48 @@ export default function EditPost() {
     loadPost();
   }, [id, fetchPost]);
 
+  // ── Derived platform flags ─────────────────────────────────────────────────
+  const isFacebook  = post?.platforms?.includes('facebook');
+  const isInstagram = post?.platforms?.includes('instagram');
+  const isBoth      = isFacebook && isInstagram;
+  const isSynced    = post?.syncedFromPlatform;
+  const isPublished = post?.status === 'published';
+
+  // ── Is Instagram-only published post ──────────────────────────────────────
+  const isInstagramOnly = isPublished && isInstagram && !isFacebook;
+
+  // ── Platform label ─────────────────────────────────────────────────────────
+  const platformLabel = isBoth
+    ? 'Facebook & Instagram'
+    : isInstagram
+    ? 'Instagram'
+    : 'Facebook';
+
+  // ── Redirect to Meta Business Suite ───────────────────────────────────────
+  const openMetaBusinessSuite = () => {
+    toast.info('Opening Meta Business Suite...');
+    window.open(META_INSTAGRAM_POSTS_URL, '_blank');
+  };
+
+  // ── Success toast ──────────────────────────────────────────────────────────
+  const getSuccessMessage = () => {
+    if (post?.status !== 'published') return 'Post updated successfully!';
+    if (isBoth) return 'Post updated — changes saved to Facebook & Instagram!';
+    return 'Post updated — changes saved to Facebook too!';
+  };
+
+  // ── Submit handler ─────────────────────────────────────────────────────────
   const handleSubmit = async (formData) => {
+    // ✅ Instagram-only published post — redirect to Meta Business Suite
+    if (isInstagramOnly) {
+      openMetaBusinessSuite();
+      return;
+    }
+
     setSaving(true);
     try {
       await updatePost(id, formData);
-      toast.success(
-        post?.status === 'published'
-          ? 'Post updated — changes saved to Facebook too!'
-          : 'Post updated successfully!'
-      );
+      toast.success(getSuccessMessage());
       navigate('/posts');
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to update post');
@@ -51,6 +88,7 @@ export default function EditPost() {
     }
   };
 
+  // ── Loading ────────────────────────────────────────────────────────────────
   if (loading) {
     return (
       <PageWrapper>
@@ -59,11 +97,14 @@ export default function EditPost() {
     );
   }
 
+  // ── Not found ──────────────────────────────────────────────────────────────
   if (notFound) {
     return (
       <PageWrapper>
         <div className="bg-white rounded-3xl border border-slate-100 p-10 text-center shadow-card max-w-md mx-auto">
-          <h2 className="text-2xl font-heading font-bold text-slate-900 mb-4">Post not found</h2>
+          <h2 className="text-2xl font-heading font-bold text-slate-900 mb-4">
+            Post not found
+          </h2>
           <p className="text-slate-600 mb-6">
             The post you're looking for doesn't exist or has been deleted.
           </p>
@@ -76,12 +117,15 @@ export default function EditPost() {
     );
   }
 
-  const isSyncedPost    = post?.syncedFromPlatform;
-  const isPublishedPost = post?.status === 'published';
-
   return (
     <PageWrapper>
-      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
+
+      {/* ── Page Header ───────────────────────────────────────────────────── */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="mb-8"
+      >
         <div className="flex items-center gap-4">
           <Button
             variant="ghost"
@@ -104,39 +148,138 @@ export default function EditPost() {
         </div>
       </motion.div>
 
+      {/* ── Banners + Form ────────────────────────────────────────────────── */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.1 }}
         className="max-w-2xl space-y-4"
       >
-        {/* Banner: synced from platform */}
-        {isSyncedPost && (
+
+        {/* ── Banner: synced from Facebook ──────────────────────────────── */}
+        {isSynced && isFacebook && !isInstagram && (
           <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-blue-50 border border-blue-200">
             <RefreshCw className="w-4 h-4 text-blue-500 flex-shrink-0 mt-0.5" />
             <p className="text-sm text-blue-700">
-              This post was synced from Facebook. Saving changes here will also update the live post on Facebook.
+              This post was synced from Facebook. Saving changes will also update the live post on Facebook.
             </p>
           </div>
         )}
 
-        {/* Banner: published post edit warning */}
-        {isPublishedPost && !isSyncedPost && (
+        {/* ── Banner: synced from Instagram ─────────────────────────────── */}
+        {isSynced && isInstagram && !isFacebook && (
+          <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-pink-50 border border-pink-200">
+            <Camera className="w-4 h-4 text-pink-500 flex-shrink-0 mt-0.5" />
+            <p className="text-sm text-pink-700">
+              This post was synced from Instagram. Saving changes will update the caption on Instagram.
+            </p>
+          </div>
+        )}
+
+        {/* ── Banner: synced from both ───────────────────────────────────── */}
+        {isSynced && isBoth && (
+          <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-purple-50 border border-purple-200">
+            <RefreshCw className="w-4 h-4 text-purple-500 flex-shrink-0 mt-0.5" />
+            <p className="text-sm text-purple-700">
+              This post was synced from {platformLabel}. Saving changes will update both platforms.
+            </p>
+          </div>
+        )}
+
+        {/* ── Banner: live Facebook post warning ────────────────────────── */}
+        {isPublished && !isSynced && isFacebook && !isInstagram && (
           <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-amber-50 border border-amber-200">
             <AlertTriangle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
             <p className="text-sm text-amber-700">
-              This post is live. Saving changes will update the content on Facebook too.
+              This post is live on Facebook. Saving changes will update the content there too.
             </p>
           </div>
         )}
 
-        <div className="bg-white rounded-3xl border border-slate-100 p-6 md:p-8 shadow-card">
-          <PostForm
-            initialData={post}
-            onSubmit={handleSubmit}
-            loading={saving}
-          />
-        </div>
+        {/* ── Banner: Instagram-only — Meta Business Suite redirect ─────── */}
+        {isInstagramOnly && (
+          <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-pink-50 border border-pink-200">
+            <ExternalLink className="w-4 h-4 text-pink-500 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-pink-700">
+                This post is live on Instagram.
+              </p>
+              <p className="text-sm text-pink-600 mt-0.5">
+                Instagram posts can only be edited via Meta Business Suite. Click the button below to open it directly.
+              </p>
+              <p className="text-xs text-pink-400 mt-1">
+                ⚠️ Only captions can be edited. Images and videos cannot be changed.
+              </p>
+              {/* ── Direct button inside banner ── */}
+              <button
+                onClick={openMetaBusinessSuite}
+                className="mt-3 inline-flex items-center gap-2 px-4 py-2 rounded-full bg-pink-600 hover:bg-pink-700 text-white text-xs font-medium transition-colors"
+              >
+                <ExternalLink className="w-3 h-3" />
+                Open Meta Business Suite
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── Banner: live on both platforms ────────────────────────────── */}
+        {isPublished && !isSynced && isBoth && (
+          <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-amber-50 border border-amber-200">
+            <AlertTriangle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm text-amber-700">
+                This post is live on Facebook & Instagram. Saving will update both platforms.
+              </p>
+              <p className="text-xs text-amber-500 mt-1">
+                ⚠️ Instagram caption, image or video cannot be edited via API.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* ── Form — hidden for Instagram-only published posts ──────────── */}
+        {!isInstagramOnly && (
+          <div className="bg-white rounded-3xl border border-slate-100 p-6 md:p-8 shadow-card">
+            <PostForm
+              initialData={post}
+              onSubmit={handleSubmit}
+              loading={saving}
+            />
+          </div>
+        )}
+
+        {/* ── Instagram-only: show only redirect card, no form ─────────── */}
+        {isInstagramOnly && (
+          <div className="bg-white rounded-3xl border border-slate-100 p-8 shadow-card text-center">
+            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-pink-500 to-rose-500 flex items-center justify-center mx-auto mb-4">
+              <Camera className="w-8 h-8 text-white" />
+            </div>
+            <h3 className="text-lg font-heading font-bold text-slate-900 mb-2">
+              Edit on Meta Business Suite
+            </h3>
+            <p className="text-slate-500 text-sm mb-6">
+              Instagram does not allow post edits via third-party apps. You can edit your caption directly on Meta Business Suite.
+            </p>
+            <div className="flex gap-3 justify-center">
+              <Button
+                variant="outline"
+                className="rounded-full"
+                onClick={() => navigate('/posts')}
+              >
+                <ArrowLeft className="w-4 h-4 mr-2" />
+                Back to Posts
+              </Button>
+              <Button
+                className="rounded-full bg-gradient-to-r from-pink-500 to-rose-500 hover:from-pink-600 hover:to-rose-600 text-white"
+                onClick={openMetaBusinessSuite}
+              >
+                <ExternalLink className="w-4 h-4 mr-2" />
+                Open Meta Business Suite
+              </Button>
+            </div>
+          </div>
+        )}
+
       </motion.div>
     </PageWrapper>
   );
