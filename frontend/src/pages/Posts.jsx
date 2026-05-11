@@ -45,18 +45,18 @@ export default function Posts() {
   };
 
   // Sync posts from Facebook into the app
-  const handleSync = async () => {
-    try {
-      const result = await syncPosts('facebook');
-      if (result.total === 0) {
-        toast.info('All posts are already up to date');
-      } else {
-        toast.success(`Synced ${result.total} new post${result.total !== 1 ? 's' : ''} from Facebook`);
-      }
-    } catch (error) {
-      toast.error('Failed to sync posts from Facebook');
+const handleSync = async () => {
+  try {
+    const result = await syncPosts(); // sync all platforms
+    if (result.total === 0) {
+      toast.info('All posts are already up to date');
+    } else {
+      toast.success(`Synced ${result.total} new post${result.total !== 1 ? 's' : ''}`);
     }
-  };
+  } catch (error) {
+    toast.error('Failed to sync posts');
+  }
+};
 
   const filteredPosts = posts.filter((post) => {
     if (activeFilter === 'all') return true;
@@ -159,15 +159,15 @@ export default function Posts() {
               : 'Try changing the filter or create a new post.'}
           </p>
           <div className="flex items-center justify-center gap-3">
-            <Button
-              variant="outline"
-              className="rounded-full"
-              onClick={handleSync}
-              disabled={syncing}
-            >
-              <RefreshCw className={`w-4 h-4 mr-2 ${syncing ? 'animate-spin' : ''}`} />
-              Sync from Facebook
-            </Button>
+       <Button
+  variant="outline"
+  className="rounded-full border-slate-200 text-slate-600 hover:bg-slate-50"
+  onClick={handleSync}
+  disabled={syncing}
+>
+  <RefreshCw className={`w-4 h-4 mr-2 ${syncing ? 'animate-spin' : ''}`} />
+  {syncing ? 'Syncing...' : 'Sync Posts'}
+</Button>
             <Button
               className="rounded-full bg-gradient-to-r from-indigo-500 to-purple-500 text-white px-6"
               onClick={() => navigate('/posts/new')}

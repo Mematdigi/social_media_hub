@@ -1,5 +1,6 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Instagram } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { format } from 'date-fns';
 import { Pencil, Trash2, Clock, RefreshCw } from 'lucide-react';
@@ -51,12 +52,32 @@ export const PostCard = ({ post, onDelete }) => {
       <div className="flex items-start justify-between gap-4 mb-4">
         <div className="flex-1 min-w-0">
           {/* Synced badge */}
-          {isSynced && (
-            <div className="flex items-center gap-1.5 mb-2">
-              <RefreshCw className="w-3 h-3 text-blue-400" />
-              <span className="text-xs text-blue-500 font-medium">Synced from Facebook</span>
-            </div>
-          )}
+{/* Synced badge — now handles both FB and IG */}
+{isSynced && (
+  <div className="flex items-center gap-1.5 mb-2">
+    <RefreshCw className="w-3 h-3 text-blue-400" />
+    <span className="text-xs text-blue-500 font-medium">
+      Synced from {post.platforms?.includes('instagram') ? 'Instagram' : 'Facebook'}
+    </span>
+  </div>
+)}
+
+{/* Instagram media type badge — add after synced banner */}
+{post.platforms?.includes('instagram') && post.mediaType && (
+  <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-pink-50 text-pink-600 text-xs font-medium mb-2">
+    <PlatformIcon platform="instagram" size="sm" />
+    {post.mediaType === 'CAROUSEL_ALBUM' ? 'Carousel'
+      : post.mediaType === 'VIDEO'       ? 'Reel'
+      : 'Photo'}
+  </div>
+)}
+{/* Threads badge */}
+{post.platforms?.includes('threads') && (
+  <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 text-xs font-medium mb-2">
+    <PlatformIcon platform="threads" size="sm" />
+    🧵 Thread
+  </div>
+)}
           <p className="text-slate-700 leading-relaxed">{contentPreview}</p>
         </div>
         <PostStatusBadge status={post.status} />
@@ -144,9 +165,10 @@ export const PostCard = ({ post, onDelete }) => {
                     />
                     <div>
                       <p className="text-sm font-medium text-slate-800">Delete everywhere</p>
-                      <p className="text-xs text-slate-500 mt-0.5">
-                        Remove from this app and delete the live post on Facebook
-                      </p>
+                     // In "Remove from app only" description:
+<p className="text-xs text-slate-500 mt-0.5">
+  Keep the post live on {post.platforms?.join(' & ')}, just stop tracking it here
+</p>
                     </div>
                   </label>
                   <label className={`flex items-start gap-3 p-3 rounded-xl border-2 cursor-pointer transition-all ${

@@ -1,150 +1,203 @@
 // services/publishService.js
-// Extensible multi-platform publisher
-// To add a new platform: add a function to `publishers` object — that's it
-
 const { decrypt } = require('../utils/encryption');
 const logger      = require('../utils/logger');
 
 // ═══════════════════════════════════════════════════════════════
 // PLATFORM PUBLISHERS
-// Each function receives: { accessToken, pageToken, accountId, pageId, content, mediaUrls }
-// Must return: { postId: string }
-// Must throw on failure (error is caught by publishToAccount)
 // ═══════════════════════════════════════════════════════════════
 
 const publishers = {
 
   // ─── Facebook ────────────────────────────────────────────────
   facebook: async ({ pageToken, pageId, content, mediaUrls }) => {
-    // Uses PAGE token + PAGE ID (not user token)
-    // pageToken and pageId come from account.pages[]
-    const body = {
-      message:      content,
-      access_token: pageToken
-    };
-
-    if (mediaUrls?.length) {
-      body.link = mediaUrls[0]; // attach first URL as link preview
-    }
+    const body = { message: content, access_token: pageToken };
+    if (mediaUrls?.length) body.link = mediaUrls[0];
 
     const res  = await fetch(`https://graph.facebook.com/v19.0/${pageId}/feed`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify(body)
     });
-
     const data = await res.json();
     if (data.error) throw new Error(`Facebook: ${data.error.message}`);
-
     return { postId: data.id };
   },
 
   // ─── Instagram ───────────────────────────────────────────────
-  // Requires: instagram_basic, instagram_content_publish permissions
-  // Flow: create container → publish container
-  instagram: async ({ accessToken, accountId, content, mediaUrls }) => {
-    // Step 1: Create media container
-    // const containerRes = await fetch(
-    //   `https://graph.facebook.com/v19.0/${accountId}/media`, {
-    //     method: 'POST',
-    //     headers: { 'Content-Type': 'application/json' },
-    //     body: JSON.stringify({
-    //       caption:      content,
-    //       image_url:    mediaUrls?.[0],   // required for IMAGE posts
-    //       access_token: accessToken
-    //     })
-    //   }
-    // );
-    // const { id: creationId } = await containerRes.json();
-    //
-    // Step 2: Publish container
-    // const publishRes = await fetch(
-    //   `https://graph.facebook.com/v19.0/${accountId}/media_publish`, {
-    //     method: 'POST',
-    //     body: JSON.stringify({ creation_id: creationId, access_token: accessToken })
-    //   }
-    // );
-    // const { id } = await publishRes.json();
-    // return { postId: id };
+  // Uses Page Access Token (stored in pages[0].pageAccessToken)
+  // Flow:
+  //   IMAGE  → create container (image_url) → publish
+  //   REELS  → create container (video_url, media_type=REELS) → publish
+  //   CAROUSEL → create N item containers → create carousel container → publish
+  //   TEXT   → caption-only IMAGE container with no media (not officially supported,
+  //             so we post as a text-only caption with a blank placeholder approach)
+  // ─────────────────────────────────────────────────────────────
+  instagram: async ({ pageToken, igAccountId, content, mediaUrls, mediaType }) => {
 
-    throw new Error('Instagram publisher not implemented yet');
+    // Detect what kind of post this is
+    const urls      = (mediaUrls || []).filter(u => u?.trim());
+    const postType  = mediaType || detectIGMediaType(urls);
+
+    logger.info('📷', `Instagram publish — type: ${postType}, igId: ${igAccountId}`);
+
+    // ── CAROUSEL (2+ images) ─────────────────────────────────
+    if (postType === 'CAROUSEL') {
+      // Step 1: Create individual item containers
+      const itemIds = [];
+      for (const url of urls) {
+        const itemRes = await fetch(
+          `https://graph.facebook.com/v19.0/${igAccountId}/media`, {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              image_url:    url,
+              is_carousel_item: true,
+              access_token: pageToken
+            })
+          }
+        );
+        const itemData = await itemRes.json();
+        if (itemData.error) throw new Error(`Instagram carousel item: ${itemData.error.message}`);
+        itemIds.push(itemData.id);
+        logger.info('📷', `IG carousel item created: ${itemData.id}`);
+      }
+
+      // Step 2: Create carousel container
+      const carouselRes = await fetch(
+        `https://graph.facebook.com/v19.0/${igAccountId}/media`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            media_type:   'CAROUSEL',
+            children:     itemIds.join(','),
+            caption:      content,
+            access_token: pageToken
+          })
+        }
+      );
+      const carouselData = await carouselRes.json();
+      if (carouselData.error) throw new Error(`Instagram carousel container: ${carouselData.error.message}`);
+
+      // Step 3: Publish
+      return await publishIGContainer(igAccountId, carouselData.id, pageToken);
+    }
+
+    // ── REELS (video) ────────────────────────────────────────
+    if (postType === 'REELS') {
+      const containerRes = await fetch(
+        `https://graph.facebook.com/v19.0/${igAccountId}/media`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            media_type:   'REELS',
+            video_url:    urls[0],
+            caption:      content,
+            access_token: pageToken
+          })
+        }
+      );
+      const containerData = await containerRes.json();
+      if (containerData.error) throw new Error(`Instagram reel container: ${containerData.error.message}`);
+
+      // Reels need processing time — poll status before publishing
+      await waitForIGContainer(igAccountId, containerData.id, pageToken);
+
+      return await publishIGContainer(igAccountId, containerData.id, pageToken);
+    }
+
+    // ── IMAGE (single photo) ─────────────────────────────────
+    if (postType === 'IMAGE') {
+      const containerRes = await fetch(
+        `https://graph.facebook.com/v19.0/${igAccountId}/media`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image_url:    urls[0],
+            caption:      content,
+            access_token: pageToken
+          })
+        }
+      );
+      const containerData = await containerRes.json();
+      if (containerData.error) throw new Error(`Instagram image container: ${containerData.error.message}`);
+
+      return await publishIGContainer(igAccountId, containerData.id, pageToken);
+    }
+
+    // ── TEXT ONLY (caption only — not natively supported by IG Graph API)
+    // Instagram requires media. We throw a clear error so the UI can warn the user.
+    throw new Error(
+      'Instagram requires at least one image or video URL. ' +
+      'Text-only posts are not supported by the Instagram API.'
+    );
   },
 
-  // ─── Twitter / X ─────────────────────────────────────────────
-  // Requires: OAuth 2.0 PKCE, tweet.write scope
-  twitter: async ({ accessToken, content, mediaUrls }) => {
-    // const res = await fetch('https://api.twitter.com/2/tweets', {
-    //   method: 'POST',
-    //   headers: {
-    //     'Content-Type':  'application/json',
-    //     'Authorization': `Bearer ${accessToken}`
-    //   },
-    //   body: JSON.stringify({ text: content })
-    // });
-    // const data = await res.json();
-    // if (data.errors) throw new Error(data.errors[0].message);
-    // return { postId: data.data.id };
+  // ─── Other platforms (stubs unchanged) ───────────────────────
+  twitter:   async () => { throw new Error('Twitter publisher not implemented yet'); },
+  linkedin:  async () => { throw new Error('LinkedIn publisher not implemented yet'); },
+  tiktok:    async () => { throw new Error('TikTok publisher not implemented yet'); },
+  youtube:   async () => { throw new Error('YouTube publisher not implemented yet'); },
+  pinterest: async () => { throw new Error('Pinterest publisher not implemented yet'); },
+  reddit:    async () => { throw new Error('Reddit publisher not implemented yet'); },
+  discord:   async () => { throw new Error('Discord publisher not implemented yet'); },
+  telegram:  async () => { throw new Error('Telegram publisher not implemented yet'); },
+};
 
-    throw new Error('Twitter publisher not implemented yet');
-  },
 
-  // ─── LinkedIn ─────────────────────────────────────────────────
-  // Requires: w_member_social scope
-  linkedin: async ({ accessToken, accountId, content, mediaUrls }) => {
-    // const res = await fetch('https://api.linkedin.com/v2/ugcPosts', {
-    //   method: 'POST',
-    //   headers: {
-    //     'Content-Type':  'application/json',
-    //     'Authorization': `Bearer ${accessToken}`,
-    //     'X-Restli-Protocol-Version': '2.0.0'
-    //   },
-    //   body: JSON.stringify({
-    //     author:             `urn:li:person:${accountId}`,
-    //     lifecycleState:     'PUBLISHED',
-    //     specificContent: {
-    //       'com.linkedin.ugc.ShareContent': {
-    //         shareCommentary: { text: content },
-    //         shareMediaCategory: 'NONE'
-    //       }
-    //     },
-    //     visibility: { 'com.linkedin.ugc.MemberNetworkVisibility': 'PUBLIC' }
-    //   })
-    // });
-    // const data = await res.json();
-    // return { postId: data.id };
+// ═══════════════════════════════════════════════════════════════
+// INSTAGRAM HELPERS
+// ═══════════════════════════════════════════════════════════════
 
-    throw new Error('LinkedIn publisher not implemented yet');
-  },
+// Detect media type from URLs
+const detectIGMediaType = (urls) => {
+  if (!urls?.length) return 'TEXT';
+  if (urls.length > 1) return 'CAROUSEL';
+  const url = urls[0].toLowerCase();
+  if (url.includes('.mp4') || url.includes('.mov') || url.includes('video')) return 'REELS';
+  return 'IMAGE';
+};
 
-  // ─── TikTok ───────────────────────────────────────────────────
-  tiktok: async ({ accessToken, content, mediaUrls }) => {
-    throw new Error('TikTok publisher not implemented yet');
-  },
+// Publish a ready container
+const publishIGContainer = async (igAccountId, creationId, pageToken) => {
+  const publishRes = await fetch(
+    `https://graph.facebook.com/v19.0/${igAccountId}/media_publish`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        creation_id:  creationId,
+        access_token: pageToken
+      })
+    }
+  );
+  const publishData = await publishRes.json();
+  if (publishData.error) throw new Error(`Instagram publish: ${publishData.error.message}`);
 
-  // ─── YouTube ──────────────────────────────────────────────────
-  youtube: async ({ accessToken, content, mediaUrls }) => {
-    throw new Error('YouTube publisher not implemented yet');
-  },
+  logger.info('📷', `✅ Instagram published — postId: ${publishData.id}`);
+  return { postId: publishData.id };
+};
 
-  // ─── Pinterest ────────────────────────────────────────────────
-  pinterest: async ({ accessToken, accountId, content, mediaUrls }) => {
-    throw new Error('Pinterest publisher not implemented yet');
-  },
+// Poll container status (needed for Reels — they need encoding time)
+const waitForIGContainer = async (igAccountId, creationId, pageToken, maxWaitMs = 60000) => {
+  const start    = Date.now();
+  const interval = 5000; // poll every 5s
 
-  // ─── Reddit ───────────────────────────────────────────────────
-  reddit: async ({ accessToken, accountId, content, mediaUrls }) => {
-    throw new Error('Reddit publisher not implemented yet');
-  },
+  while (Date.now() - start < maxWaitMs) {
+    const statusRes = await fetch(
+      `https://graph.facebook.com/v19.0/${creationId}` +
+      `?fields=status_code,status&access_token=${pageToken}`
+    );
+    const statusData = await statusRes.json();
 
-  // ─── Discord ──────────────────────────────────────────────────
-  discord: async ({ accessToken, accountId, content, mediaUrls }) => {
-    throw new Error('Discord publisher not implemented yet');
-  },
+    logger.info('📷', `IG container status: ${statusData.status_code}`);
 
-  // ─── Telegram ─────────────────────────────────────────────────
-  telegram: async ({ accessToken, accountId, content, mediaUrls }) => {
-    throw new Error('Telegram publisher not implemented yet');
-  },
+    if (statusData.status_code === 'FINISHED') return;
+    if (statusData.status_code === 'ERROR')
+      throw new Error(`Instagram container processing failed: ${statusData.status}`);
+
+    await new Promise(r => setTimeout(r, interval));
+  }
+
+  throw new Error('Instagram container processing timed out after 60s');
 };
 
 
@@ -152,82 +205,79 @@ const publishers = {
 // CORE: publish one account
 // ═══════════════════════════════════════════════════════════════
 
-const publishToAccount = async (account, content, mediaUrls) => {
+const publishToAccount = async (account, content, mediaUrls, mediaType) => {
   const platform  = account.platform.toLowerCase();
   const publisher = publishers[platform];
 
-  if (!publisher) {
-    throw new Error(`No publisher registered for platform: ${platform}`);
-  }
+  if (!publisher) throw new Error(`No publisher for platform: ${platform}`);
 
-  // Decrypt user-level access token (used by most platforms)
   const accessToken = decrypt(account.accessToken);
 
-  // ── Facebook special case: use Page token from pages[] ──────
+  // ── Facebook: loop over selected pages ───────────────────────
   if (platform === 'facebook') {
     const selectedPages = (account.pages || []).filter(p => p.isSelected);
-
-    if (!selectedPages.length) {
-      throw new Error('Facebook: no pages selected for posting');
-    }
+    if (!selectedPages.length) throw new Error('Facebook: no pages selected for posting');
 
     const results = [];
-
     for (const page of selectedPages) {
       try {
         const pageToken = decrypt(page.pageAccessToken);
-
-        const result = await publisher({
-          accessToken,          // user token (backup)
-          pageToken,            // page token (used for posting)
-          accountId: account.accountId,
-          pageId:    page.pageId,
-          content,
-          mediaUrls
-        });
+        const result    = await publisher({ accessToken, pageToken, accountId: account.accountId, pageId: page.pageId, content, mediaUrls });
 
         logger.info('📘', `✅ Facebook: posted to "${page.pageName}" — ID: ${result.postId}`);
-
-        results.push({
-          pageId:   page.pageId,
-          pageName: page.pageName,
-          postId:   result.postId,
-          status:   'published'
-        });
+        results.push({ pageId: page.pageId, pageName: page.pageName, postId: result.postId, status: 'published' });
       } catch (err) {
-        logger.error(`❌ Facebook: failed for page "${page.pageName}": ${err.message}`);
-        results.push({
-          pageId:   page.pageId,
-          pageName: page.pageName,
-          status:   'failed',
-          error:    err.message
-        });
+        logger.error(`❌ Facebook page "${page.pageName}": ${err.message}`);
+        results.push({ pageId: page.pageId, pageName: page.pageName, status: 'failed', error: err.message });
       }
     }
 
-    // Return combined postId for platformResults (first successful one)
     const firstSuccess = results.find(r => r.status === 'published');
     if (!firstSuccess) throw new Error(results.map(r => r.error).join(', '));
 
+    return { postId: firstSuccess.postId, status: 'published', pages: results };
+  }
+
+  // ── Instagram: uses pages[0].pageAccessToken + accountId ─────
+  // The IG Business account ID is stored as account.accountId
+  // The page access token is stored in pages[0].pageAccessToken
+  if (platform === 'instagram') {
+    const page = (account.pages || [])[0];
+    if (!page?.pageAccessToken) throw new Error('Instagram: page access token not found');
+
+    const pageToken   = decrypt(page.pageAccessToken);
+    const igAccountId = account.accountId; // IG Business account ID
+
+    const result = await publisher({
+      accessToken,    // long-lived user token
+      pageToken,      // FB page token (used for IG Graph API calls)
+      igAccountId,    // IG Business account ID
+      content,
+      mediaUrls,
+      mediaType       // optional override: 'IMAGE' | 'REELS' | 'CAROUSEL'
+    });
+
+    logger.info('📷', `✅ Instagram published — @${account.igUsername}`);
+
     return {
-      postId:   firstSuccess.postId,
-      status:   'published',
-      pages:    results           // detailed per-page results
+      postId: result.postId,
+      status: 'published',
+      pages:  [{
+        pageId:   page.pageId,
+        pageName: page.pageName,
+        postId:   result.postId,
+        status:   'published'
+      }]
     };
   }
 
-  // ── All other platforms: use user access token ───────────────
-  return await publisher({
-    accessToken,
-    accountId: account.accountId,
-    content,
-    mediaUrls
-  });
+  // ── All other platforms ───────────────────────────────────────
+  return await publisher({ accessToken, accountId: account.accountId, content, mediaUrls });
 };
 
 
 // ═══════════════════════════════════════════════════════════════
-// MAIN: publish to all selected accounts
+// MAIN EXPORT
 // ═══════════════════════════════════════════════════════════════
 
 const publishPostToPlatforms = async (post, accounts) => {
@@ -235,7 +285,12 @@ const publishPostToPlatforms = async (post, accounts) => {
 
   for (const account of accounts) {
     try {
-      const result = await publishToAccount(account, post.content, post.mediaUrls);
+      const result = await publishToAccount(
+        account,
+        post.content,
+        post.mediaUrls,
+        post.mediaType  // optional field on post doc
+      );
 
       platformResults.push({
         platform:       account.platform,
@@ -243,14 +298,11 @@ const publishPostToPlatforms = async (post, accounts) => {
         platformPostId: result.postId,
         status:         'published',
         publishedAt:    new Date(),
-        pages:          result.pages || []   // Facebook page breakdown
+        pages:          result.pages || []
       });
-
-      logger.info(`✅ Published to ${account.platform} (${account.accountId})`);
 
     } catch (error) {
       logger.error(`❌ Failed to publish to ${account.platform}`, error.message);
-
       platformResults.push({
         platform:  account.platform,
         accountId: account.accountId,
@@ -266,16 +318,9 @@ const publishPostToPlatforms = async (post, accounts) => {
   return { status: finalStatus, platformResults };
 };
 
-
-// ═══════════════════════════════════════════════════════════════
-// UTILITY: register a new platform publisher at runtime
-// Usage: registerPublisher('snapchat', async ({ accessToken, content }) => { ... })
-// ═══════════════════════════════════════════════════════════════
-
 const registerPublisher = (platform, handler) => {
   publishers[platform.toLowerCase()] = handler;
   logger.info(`📌 Publisher registered for: ${platform}`);
 };
-
 
 module.exports = { publishPostToPlatforms, registerPublisher };
