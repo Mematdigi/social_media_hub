@@ -10,34 +10,15 @@ import {
 } from '../ui/alert-dialog';
 import { getPlatformConfig } from '../../utils/platformConfig';
 import { cn } from '../../lib/utils';
+import { accountsAPI } from '../../services/api';
 
-const API_URL   = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
-const TOKEN_KEY = 'token';
-
-import { accountsAPI } from '../../services/api';// ── Facebook SDK scopes ────────────────────────────────────────────────────
-const FB_SCOPES = {
-  facebook: [
-    'public_profile',
-    'email',
-    'pages_show_list',
-    'pages_read_engagement',
-    'pages_manage_posts',
-  ].join(','),
-
-  instagram: [
-    'public_profile',
-    'email',
-    'pages_show_list',
-    'pages_read_engagement',
-    'pages_manage_posts',
-    'instagram_basic',
-    'instagram_content_publish',
-    'instagram_manage_comments',
-    'instagram_manage_insights',
-    'business_management',
-  ].join(','),
-};
-
+/* ─────────────────────────────────────────────────────────────
+ *  IMPORTANT: This must point at YOUR backend.
+ *  Your backend .env has PORT=5000, so REACT_APP_BACKEND_URL
+ *  must be http://localhost:5000 (NOT 8001).
+ * ─────────────────────────────────────────────────────────── */
+const API_URL   = process.env.API_URL || 'http://localhost:5000';
+const TOKEN_KEY = 'socialhub_token';
 export const PlatformCard = ({
   platform,
   connected      = false,
@@ -50,8 +31,10 @@ export const PlatformCard = ({
   const [disconnecting, setDisconnecting] = useState(false);
   const [connecting, setConnecting]       = useState(false);
   const [connectError, setConnectError]   = useState('');
+
   const popupRef    = useRef(null);
   const intervalRef = useRef(null);
+  const handlerRef  = useRef(null);
 
   const config = getPlatformConfig(platform);
 
@@ -76,138 +59,120 @@ export const PlatformCard = ({
     } catch { return true; }
   };
 
-  // ── Cleanup popup listeners on unmount ───────────────────────────────────
+  // ── Cleanup on unmount ───────────────────────────────────────────────────
   useEffect(() => {
     return () => {
       clearInterval(intervalRef.current);
-      window.removeEventListener('message', handlePopupMessage);
+      if (handlerRef.current) {
+        window.removeEventListener('message', handlerRef.current);
+      }
     };
   }, []);
 
-  // ── Save Facebook token to backend ───────────────────────────────────────
-  const saveTokenToBackend = async (accessToken) => {
-    const token = getAuthToken();
-    const res = await fetch(`${API_URL}/api/accounts/connect/facebook/token`, {
-      method: 'POST',
-      headers: {
-        'Content-Type':  'application/json',
-        'Authorization': `Bearer ${token}`,
-      },
-      body: JSON.stringify({ accessToken }),
-    });
-    return await res.json();
-  };
-
-  // ── Save Instagram token to backend ──────────────────────────────────────
-  const saveInstagramTokenToBackend = async (accessToken) => {
-    const token = getAuthToken();
-    const res = await fetch(`${API_URL}/api/accounts/connect/instagram/token`, {
-      method: 'POST',
-      headers: {
-        'Content-Type':  'application/json',
-        'Authorization': `Bearer ${token}`,
-      },
-      body: JSON.stringify({ accessToken }),
-    });
-    return await res.json();
-  };
-
-  // ── Handle postMessage from Threads popup ─────────────────────────────────
-  const handlePopupMessage = (event) => {
-    if (event.origin !== API_URL) return;
-    if (event.data?.platform !== 'threads') return;
-
-    // Cleanup
-    window.removeEventListener('message', handlePopupMessage);
-    clearInterval(intervalRef.current);
-    if (popupRef.current && !popupRef.current.closed) {
-      popupRef.current.close();
-    }
-
-    if (event.data.success) {
-      if (onConnected) {
-        onConnected('threads');
-      } else {
-        window.location.href = '/accounts?connected=threads';
-      }
-    } else {
-      setConnectError(event.data.message || 'Failed to connect Threads');
-    }
-    setConnecting(false);
-  };
-
-  // ── METHOD 1: Facebook SDK popup (Facebook + Instagram) ──────────────────
-  const connectFacebookSDK = () => {
+  /* ═════════════════════════════════════════════════════════════
+   *  🆕 META POPUP CONNECT — replaces the FB SDK approach
+   *  Opens a SEPARATE browser window to the backend OAuth route.
+   *  That window has its own browsing context, so your app's
+   *  FB Login SDK listener cannot see it → no /dashboard redirect.
+   * ═══════════════════════════════════════════════════════════ */
+  const connectMetaPopup = (targetPlatform) => {
     setConnectError('');
 
-    if (!window.FB) {
-      setConnectError('Facebook SDK not loaded. Please refresh the page.');
-      return;
-    }
     if (isTokenExpired()) {
       localStorage.removeItem(TOKEN_KEY);
       window.location.href = '/login';
       return;
     }
 
+    const userId = getUserId();
+    if (!userId) {
+      setConnectError('You must be logged in.');
+      return;
+    }
+
     setConnecting(true);
-    const scope = FB_SCOPES[platform] || FB_SCOPES.facebook;
 
-    // ✅ Regular function — NOT async
-    window.FB.login(function(response) {
-      if (response.authResponse) {
-        const accessToken = response.authResponse.accessToken;
+    // ── Open popup window centred on screen ──────────────────
+    const w = 600;
+    const h = 720;
+    const left = (window.screen.width  - w) / 2;
+    const top  = (window.screen.height - h) / 2;
 
-        const saveToken = platform === 'instagram'
-          ? saveInstagramTokenToBackend(accessToken)
-          : saveTokenToBackend(accessToken);
+    const popup = window.open(
+      `${API_URL}/api/accounts/oauth/${targetPlatform}?user_id=${encodeURIComponent(userId)}`,
+      `connect_${targetPlatform}`,
+      `width=${w},height=${h},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no`
+    );
 
-        saveToken
-          .then((data) => {
-            if (data.success) {
-              if (onConnected) {
-                onConnected(platform);
-              } else {
-                window.location.href = `/accounts?connected=${platform}`;
-              }
-            } else {
-              setConnectError(data.message || `Failed to connect ${config.name}`);
-            }
-          })
-          .catch(() => setConnectError('Network error. Please try again.'))
-          .finally(() => setConnecting(false));
+    if (!popup) {
+      setConnecting(false);
+      setConnectError('Popup blocked. Please allow popups for this site and try again.');
+      return;
+    }
 
-      } else {
-        setConnecting(false);
-        setConnectError('Login was cancelled.');
+    popupRef.current = popup;
+
+    // ── Cleanup helper used by both handlers below ───────────
+    const cleanup = () => {
+      clearInterval(intervalRef.current);
+      if (handlerRef.current) {
+        window.removeEventListener('message', handlerRef.current);
+        handlerRef.current = null;
       }
-    }, { scope });
+      setConnecting(false);
+    };
+
+    // ── postMessage listener ─────────────────────────────────
+    const handler = (event) => {
+      const data = event.data || {};
+      // We only care about messages naming this platform
+      if (data.platform !== targetPlatform) return;
+
+      cleanup();
+      if (popup && !popup.closed) popup.close();
+
+      if (data.success) {
+        if (onConnected) {
+          onConnected(targetPlatform);
+        } else {
+          window.location.href = `/accounts?connected=${targetPlatform}`;
+        }
+      } else {
+        setConnectError(data.message || `Failed to connect ${config.name}`);
+      }
+    };
+
+    handlerRef.current = handler;
+    window.addEventListener('message', handler);
+
+    // ── Detect manual popup close ───────────────────────────
+    intervalRef.current = setInterval(() => {
+      if (popup.closed) cleanup();
+    }, 500);
   };
 
-  // ── METHOD 2: Threads popup (same feel as FB SDK) ────────────────────────
-// PlatformCard.jsx — connectThreadsPopup
-const connectThreadsPopup = () => {
-  setConnectError('');
-  setConnecting(true);
+  // ── Threads (unchanged — already uses popup via accountsAPI) ─────────────
+  const connectThreadsPopup = () => {
+    setConnectError('');
+    setConnecting(true);
 
-  // ✅ Delegate entirely to accountsAPI
-  accountsAPI.initiateOAuth('threads')
-    .then(() => {
-      if (onConnected) {
-        onConnected('threads');
-      } else {
-        window.location.href = '/accounts?connected=threads';
-      }
-    })
-    .catch((err) => {
-      setConnectError(err.message || 'Failed to connect Threads');
-    })
-    .finally(() => {
-      setConnecting(false);
-    });
-};
+    accountsAPI.initiateOAuth('threads')
+      .then(() => {
+        if (onConnected) {
+          onConnected('threads');
+        } else {
+          window.location.href = '/accounts?connected=threads';
+        }
+      })
+      .catch((err) => {
+        setConnectError(err.message || 'Failed to connect Threads');
+      })
+      .finally(() => {
+        setConnecting(false);
+      });
+  };
 
-  // ── METHOD 3: OAuth redirect (all other platforms) ───────────────────────
+  // ── Generic OAuth redirect (Twitter, LinkedIn, etc.) ─────────────────────
   const connectOAuth = () => {
     setConnectError('');
     if (isTokenExpired()) {
@@ -226,11 +191,11 @@ const connectThreadsPopup = () => {
   // ── Main connect handler ──────────────────────────────────────────────────
   const handleConnect = () => {
     if (platform === 'facebook' || platform === 'instagram') {
-      connectFacebookSDK();    // ✅ FB.login popup
+      connectMetaPopup(platform);   // 🆕 popup OAuth (no FB SDK)
     } else if (platform === 'threads') {
-      connectThreadsPopup();   // ✅ Threads popup — same UX as FB SDK
+      connectThreadsPopup();
     } else {
-      connectOAuth();           // Full redirect for Twitter, LinkedIn etc.
+      connectOAuth();
     }
   };
 
@@ -344,6 +309,7 @@ const connectThreadsPopup = () => {
               </div>
             )}
             <Button
+              type="button"
               data-testid={`connect-${platform}`}
               disabled={connecting}
               className="w-full mt-4 rounded-full bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white shadow-button disabled:opacity-60"

@@ -1,4 +1,3 @@
-
 const express       = require('express');
 const { v4: uuidv4 }= require('uuid');
 const axios         = require('axios');
@@ -17,7 +16,7 @@ const router = express.Router();
 // ─────────────────────────────────────────────────────────────
 const OAUTH_CREDENTIALS = {
   facebook:  { clientId: process.env.FB_CLIENT_ID,      clientSecret: process.env.FB_CLIENT_SECRET },
-  instagram: { clientId: process.env.IG_CLIENT_ID,      clientSecret: process.env.IG_CLIENT_SECRET },
+  instagram: { clientId: process.env.IG_CLIENT_ID || process.env.FB_CLIENT_ID, clientSecret: process.env.IG_CLIENT_SECRET || process.env.FB_CLIENT_SECRET },
   twitter:   { clientId: process.env.TW_CLIENT_ID,      clientSecret: process.env.TW_CLIENT_SECRET },
   linkedin:  { clientId: process.env.LI_CLIENT_ID,      clientSecret: process.env.LI_CLIENT_SECRET },
   tiktok:    { clientId: process.env.TT_CLIENT_ID,      clientSecret: process.env.TT_CLIENT_SECRET },
@@ -34,7 +33,7 @@ const getBaseUrl    = () => process.env.FRONTEND_URL || 'http://localhost:3000';
 const getBackendUrl = () => process.env.API_URL       || 'http://localhost:5000';
 
 // ─────────────────────────────────────────────────────────────
-// formatAccount — UPDATED to include pages[]
+// formatAccount — includes pages[]
 // ─────────────────────────────────────────────────────────────
 const formatAccount = (acc) => ({
   id:             acc.id,
@@ -46,18 +45,16 @@ const formatAccount = (acc) => ({
   isActive:       acc.isActive,
   followers:      acc.followers,
   connectedAt:    acc.connectedAt.toISOString(),
-  // ── NEW: pages list (token excluded for security) ──
   pages: (acc.pages || []).map(p => ({
     pageId:     p.pageId,
     pageName:   p.pageName,
     category:   p.category,
     isSelected: p.isSelected
-    // pageAccessToken intentionally excluded from response
   }))
 });
 
 // ─────────────────────────────────────────────────────────────
-// Facebook helpers — same as before
+// Facebook helpers
 // ─────────────────────────────────────────────────────────────
 const exchangeForLongLivedToken = async (shortLivedToken) => {
   const res = await axios.get('https://graph.facebook.com/oauth/access_token', {
@@ -108,7 +105,6 @@ const saveFacebookAccount = async (userId, accessToken) => {
       tokenExpiry:    new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
       isActive:       true,
       followers,
-      // ── Save each page with its encrypted token ──
       pages: pages.map(p => ({
         pageId:          p.id,
         pageName:        p.name,
@@ -125,9 +121,114 @@ const saveFacebookAccount = async (userId, accessToken) => {
   return saved;
 };
 
+// ─────────────────────────────────────────────────────────────
+// Instagram helper
+// ─────────────────────────────────────────────────────────────
+const saveInstagramAccount = async (userId, accessToken) => {
+  const longLivedToken = await exchangeForLongLivedToken(accessToken);
+
+  const pagesRes = await axios.get('https://graph.facebook.com/me/accounts', {
+    params: {
+      fields:       'id,name,access_token,instagram_business_account,category',
+      access_token: longLivedToken
+    }
+  });
+  const pages = pagesRes.data.data || [];
+
+  const pagesWithIG = pages.filter(p => p.instagram_business_account?.id);
+  if (pagesWithIG.length === 0) {
+    throw new Error(
+      'No Instagram Business or Creator account found. ' +
+      'Please link your Instagram to a Facebook Page in Meta Business Suite first.'
+    );
+  }
+
+  const page            = pagesWithIG[0];
+  const igId            = page.instagram_business_account.id;
+  const pageAccessToken = page.access_token;
+
+  const igRes = await axios.get(`https://graph.facebook.com/${igId}`, {
+    params: {
+      fields:       'id,username,name,biography,followers_count,media_count,profile_picture_url,website',
+      access_token: pageAccessToken
+    }
+  });
+  const ig = igRes.data;
+
+  const saved = await SocialAccount.findOneAndUpdate(
+    { userId, platform: 'instagram' },
+    {
+      id:             uuidv4(),
+      userId,
+      platform:       'instagram',
+      accountName:    ig.name || ig.username,
+      accountId:      ig.id,
+      profilePicture: ig.profile_picture_url || '',
+      accessToken:    encrypt(longLivedToken),
+      tokenExpiry:    new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
+      isActive:       true,
+      followers:      ig.followers_count || 0,
+      pages: [{
+        pageId:          page.id,
+        pageName:        page.name,
+        pageAccessToken: encrypt(pageAccessToken),
+        category:        page.category || '',
+        isSelected:      true
+      }],
+      connectedAt: new Date()
+    },
+    { upsert: true, new: true }
+  );
+
+  logger.info('🔗', `Instagram saved for user ${userId} — @${ig.username} via page "${page.name}"`);
+  return saved;
+};
+
+// ─────────────────────────────────────────────────────────────
+// 🆕 POPUP HTML — postMessage's the opener and closes window
+// ─────────────────────────────────────────────────────────────
+const sendPopupMessage = (res, platform, success, message = '') => {
+  const FRONTEND_URL = getBaseUrl();
+  const safeMsg = String(message).replace(/'/g, "\\'").replace(/\n/g, ' ');
+
+  return res.send(`
+    <!DOCTYPE html>
+    <html>
+      <head><title>Connecting ${platform}...</title></head>
+      <body style="margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f8fafc;">
+        <div style="display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;">
+          <div style="font-size:48px;margin-bottom:16px;">${success ? '✅' : '❌'}</div>
+          <p style="color:#475569;font-size:16px;text-align:center;padding:0 20px;">
+            ${success ? platform + ' connected! Closing...' : 'Connection failed. Closing...'}
+          </p>
+        </div>
+        <script>
+          try {
+            if (window.opener && !window.opener.closed) {
+              window.opener.postMessage(
+                {
+                  platform: '${platform}',
+                  success:  ${success},
+                  message:  '${safeMsg}'
+                },
+                '*'
+              );
+              setTimeout(() => window.close(), 800);
+            } else {
+              window.location.href = '${FRONTEND_URL}/accounts?${success ? 'connected=' + platform : 'error=' + platform + '_failed'}';
+            }
+          } catch (e) {
+            window.location.href = '${FRONTEND_URL}/accounts?${success ? 'connected=' + platform : 'error=' + platform + '_failed'}';
+          }
+        </script>
+      </body>
+    </html>
+  `);
+};
+
 
 // ═════════════════════════════════════════════════════════════
-// EXISTING ROUTES — all unchanged
+// EXISTING ROUTES
 // ═════════════════════════════════════════════════════════════
 
 router.get('/', authMiddleware, async (req, res) => {
@@ -166,6 +267,7 @@ router.get('/platforms', authMiddleware, async (req, res) => {
   }
 });
 
+// ── Legacy FB SDK token route — kept for backward compatibility ──
 router.post('/connect/facebook/token', async (req, res) => {
   try {
     const { accessToken } = req.body;
@@ -223,243 +325,22 @@ router.post('/connect/facebook/token', async (req, res) => {
 });
 
 
-  router.get('/oauth/threads', (req, res) => {
-    let { user_id } = req.query;
-
-    const user = SocialAccount.find({ userId: user_id, platform: 'facebook' });
-    console.log(user);
-  user_id = user.accountId
-    if (!user_id) {
-      return res.redirect(`${getBaseUrl()}/accounts?error=no_user`);
-    }
-  
-    // No credentials — use demo mode
-    if (!process.env.THREADS_APP_ID) {
-      logger.info('🔗 No Threads credentials — using demo mode');
-      return res.redirect(
-        `${getBackendUrl()}/api/accounts/oauth/threads/callback?user_id=${user_id}&demo=true`
-      );
-    }
-  
-    const redirectUri = `${getBackendUrl()}/api/accounts/oauth/threads/callback`;
-  
-    const url =
-      `https://threads.net/oauth/authorize?` +
-      `client_id=${process.env.THREADS_APP_ID}` +
-      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-      `&scope=threads_basic,threads_content_publish` +
-      `&response_type=code` +
-      `&state=${user_id}`;
-  
-    logger.info('🔗', `Redirecting to Threads OAuth for user ${user_id}`);
-    res.redirect(url);
-  });
-  
-  // ── STEP 2: Threads OAuth Callback ───────────────────────────
-  // ✅ Returns HTML that sends postMessage to parent (popup style)
-  // Matches Facebook/Instagram popup behavior
-  router.get('/oauth/threads/callback', async (req, res) => {
-    const { code, state: userId, error, demo } = req.query;
-    const FRONTEND_URL = getBaseUrl();
-  
-    // ── Helper: send postMessage to parent popup and close ──────
-    const sendPopupMessage = (success, message = '') => {
-      return res.send(`
-        <!DOCTYPE html>
-        <html>
-          <head><title>Connecting Threads...</title></head>
-          <body>
-            <script>
-              try {
-                if (window.opener) {
-                  // ✅ Send result to parent window (like FB SDK)
-                  window.opener.postMessage(
-                    {
-                      platform: 'threads',
-                      success:  ${success},
-                      message:  '${message}'
-                    },
-                    '${FRONTEND_URL}'
-                  );
-                  window.close();
-                } else {
-                  // Fallback: no opener — do a redirect instead
-                  window.location.href = '${FRONTEND_URL}/accounts?${success ? 'connected=threads' : 'error=threads_failed'}';
-                }
-              } catch (e) {
-                window.location.href = '${FRONTEND_URL}/accounts?${success ? 'connected=threads' : 'error=threads_failed'}';
-              }
-            </script>
-            <p style="font-family:sans-serif;text-align:center;margin-top:40px">
-              ${success ? 'Threads connected! Closing...' : 'Connection failed. Closing...'}
-            </p>
-          </body>
-        </html>
-      `);
-    };
-  
-    // ── User denied ──────────────────────────────────────────────
-    if (error) {
-      logger.error('Threads OAuth denied', error);
-      return sendPopupMessage(false, 'Login was denied');
-    }
-  
-    // ── Demo mode ────────────────────────────────────────────────
-    if (demo === 'true' || !code) {
-      try {
-        await SocialAccount.findOneAndUpdate(
-          { userId, platform: 'threads' },
-          {
-            id:             uuidv4(),
-            userId,
-            platform:       'threads',
-            accountName:    'Demo Threads Account',
-            accountId:      `demo_threads_${userId.substring(0, 8)}`,
-            profilePicture: `https://api.dicebear.com/7.x/initials/svg?seed=threads`,
-            accessToken:    encrypt('demo_threads_token'),
-            tokenExpiry:    new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
-            isActive:       true,
-            followers:      0,
-            connectedAt:    new Date()
-          },
-          { upsert: true, new: true }
-        );
-        logger.info('🔗', `Threads connected (demo) for user ${userId}`);
-        return sendPopupMessage(true);
-      } catch (err) {
-        logger.error('Threads demo save failed', err.message);
-        return sendPopupMessage(false, 'Demo connection failed');
-      }
-    }
-  
-    // ── Real OAuth ───────────────────────────────────────────────
-    const redirectUri = `${getBackendUrl()}/api/accounts/oauth/threads/callback`;
-  
-    try {
-      // 1. Exchange code for short-lived token
-      const tokenRes = await axios.post(
-        'https://graph.threads.net/oauth/access_token',
-        new URLSearchParams({
-          client_id:     process.env.THREADS_APP_ID,
-          client_secret: process.env.THREADS_APP_SECRET,
-          code,
-          grant_type:    'authorization_code',
-          redirect_uri:  redirectUri
-        }),
-        { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-      );
-  
-      const shortLivedToken = tokenRes.data.access_token;
-      const threadsUserId   = tokenRes.data.user_id;
-  
-      // 2. Exchange for long-lived token (60 days)
-      const longLivedRes = await axios.get(
-        'https://graph.threads.net/access_token',
-        {
-          params: {
-            grant_type:    'th_exchange_token',
-            client_secret: process.env.THREADS_APP_SECRET,
-            access_token:  shortLivedToken
-          }
-        }
-      );
-  
-      const longLivedToken = longLivedRes.data.access_token;
-  
-      // 3. Get Threads profile
-      const profileRes = await axios.get(
-        `https://graph.threads.net/v1.0/${threadsUserId}`,
-        {
-          params: {
-            fields:       'id,username,threads_profile_picture_url,threads_biography',
-            access_token: longLivedToken
-          }
-        }
-      );
-  
-      const profile = profileRes.data;
-  
-      // 4. Save to MongoDB
-      await SocialAccount.findOneAndUpdate(
-        { userId, platform: 'threads' },
-        {
-          id:             uuidv4(),
-          userId,
-          platform:       'threads',
-          accountName:    profile.username,
-          accountId:      profile.id,
-          profilePicture: profile.threads_profile_picture_url || '',
-          accessToken:    encrypt(longLivedToken),
-          tokenExpiry:    new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
-          isActive:       true,
-          followers:      0,
-          connectedAt:    new Date()
-        },
-        { upsert: true, new: true }
-      );
-  
-      logger.info('🔗', `Threads connected for user ${userId} (@${profile.username})`);
-  
-      // ✅ Send success to popup — closes it like FB SDK
-      return sendPopupMessage(true);
-  
-    } catch (err) {
-      logger.error('Threads OAuth callback failed', err.response?.data || err.message);
-      return sendPopupMessage(false, 'Connection failed. Please try again.');
-    }
-  });
-
-// ─────────────────────────────────────────────────────────────
-// GET /api/accounts/oauth/threads/popup-url
-// Returns the Threads OAuth popup URL — frontend just opens it
-// ─────────────────────────────────────────────────────────────
-router.get('/oauth/threads/popup-url', authMiddleware, async (req, res) => {
-  try {
-    const userId = req.user.id; // ✅ from JWT middleware — correct user_id
-const user = await SocialAccount.findOne({ userId, platform: 'facebook' });
-console.log(user.accountId);
-    if (!process.env.THREADS_APP_ID) {
-      // Demo mode — return demo callback URL
-      return res.json({
-        success:  true,
-        popupUrl: `${getBackendUrl()}/api/accounts/oauth/threads/callback?user_id=${userId}&demo=true`,
-        demo:     true
-      });
-    }
-
-    const redirectUri = `${getBackendUrl()}/api/accounts/oauth/threads/callback`;
-
-    const popupUrl =
-      `https://threads.net/oauth/authorize?` +
-      `client_id=${process.env.THREADS_APP_ID}` +
-      `&redirect_uri= https://socialsizzle.herokuapp.com/auth/` +
-      `&scope=threads_basic,threads_content_publish` +
-      `&response_type=code` +
-      `&state=${user.accountId}`;  // ✅ uses real user_id from JWT
-
-    res.json({
-      success:  true,
-      popupUrl,
-      demo:     false
-    });
-
-  } catch (err) {
-    logger.error('Failed to generate Threads popup URL', err.message);
-    res.status(500).json({ success: false, message: 'Failed to generate popup URL' });
-  }
-});
-
+// ═════════════════════════════════════════════════════════════
+// 🆕 OAUTH START — /api/accounts/oauth/:platform
+// For facebook + instagram: builds the FB OAuth URL inline so
+// it works regardless of buildAuthUrl. For others: falls back
+// to buildAuthUrl as before.
+// ═════════════════════════════════════════════════════════════
 router.get('/oauth/:platform', async (req, res) => {
   try {
     const { platform } = req.params;
     const { user_id }  = req.query;
 
     if (!user_id) return res.redirect(`${getBaseUrl()}/accounts?error=no_user`);
-    if (platform === 'facebook') return res.redirect(`${getBaseUrl()}/accounts?error=use_token_method`);
 
     const platformConfig = PLATFORMS.find(p => p.platform === platform);
-    if (!platformConfig || !platformConfig.oauthSupported) {
-      return res.redirect(`${getBaseUrl()}/accounts?error=unsupported_platform`);
+    if (!platformConfig) {
+      return res.redirect(`${getBaseUrl()}/accounts?error=invalid_platform`);
     }
 
     const existing = await SocialAccount.findOne({ userId: user_id, platform });
@@ -467,16 +348,37 @@ router.get('/oauth/:platform', async (req, res) => {
 
     const credentials = OAUTH_CREDENTIALS[platform];
     if (!credentials?.clientId) {
-      logger.info(`🔗 Demo mode for ${platform}`);
+      logger.info(`🔗 Demo mode for ${platform} (missing client_id env var)`);
       return res.redirect(`${getBackendUrl()}/api/accounts/oauth/${platform}/callback?user_id=${user_id}&demo=true`);
     }
 
     const redirectUri = `${getBackendUrl()}/api/accounts/oauth/${platform}/callback`;
     const state       = Buffer.from(JSON.stringify({ user_id, platform })).toString('base64');
-    const authUrl     = buildAuthUrl(platform, credentials.clientId, redirectUri, state);
 
+    // 🆕 INLINE FB / IG OAUTH URL — does not depend on buildAuthUrl
+    if (platform === 'facebook' || platform === 'instagram') {
+      const scope = platform === 'facebook'
+        ? 'public_profile,pages_show_list,pages_read_engagement,pages_manage_posts'
+        : 'public_profile,pages_show_list,pages_read_engagement,instagram_basic,instagram_content_publish,business_management';
+
+      const authUrl =
+        `https://www.facebook.com/v19.0/dialog/oauth?` +
+        `client_id=${credentials.clientId}` +
+        `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+        `&scope=${encodeURIComponent(scope)}` +
+        `&state=${state}` +
+        `&response_type=code` +
+        `&auth_type=rerequest`;
+
+      logger.info('🔗', `Redirecting popup to ${platform} OAuth for user ${user_id}`);
+      return res.redirect(authUrl);
+    }
+
+    // ── Other platforms: use buildAuthUrl as before ─────────
+    const authUrl = buildAuthUrl(platform, credentials.clientId, redirectUri, state);
     if (!authUrl) return res.redirect(`${getBaseUrl()}/accounts?error=oauth_config_error`);
 
+    logger.info('🔗', `Redirecting to ${platform} OAuth for user ${user_id}`);
     return res.redirect(authUrl);
   } catch (error) {
     logger.error('OAuth initiation failed', error);
@@ -484,12 +386,18 @@ router.get('/oauth/:platform', async (req, res) => {
   }
 });
 
+// ═════════════════════════════════════════════════════════════
+// 🆕 OAUTH CALLBACK — exchanges code for token, saves account,
+// returns HTML that postMessage's the opener and closes popup.
+// ═════════════════════════════════════════════════════════════
 router.get('/oauth/:platform/callback', async (req, res) => {
   try {
     const { platform } = req.params;
     const { code, state, user_id: directUserId, demo, error } = req.query;
 
-    if (error) return res.redirect(`${getBaseUrl()}/accounts?error=${platform}_denied`);
+    if (error) {
+      return sendPopupMessage(res, platform, false, 'Authorization was denied');
+    }
 
     let userId = directUserId;
     if (state && !userId) {
@@ -497,18 +405,26 @@ router.get('/oauth/:platform/callback', async (req, res) => {
         const decoded = JSON.parse(Buffer.from(state, 'base64').toString());
         userId = decoded.user_id;
       } catch {
-        return res.redirect(`${getBaseUrl()}/accounts?error=invalid_state`);
+        return sendPopupMessage(res, platform, false, 'Invalid state');
       }
     }
 
-    if (!userId) return res.redirect(`${getBaseUrl()}/accounts?error=no_user`);
+    if (!userId) {
+      return sendPopupMessage(res, platform, false, 'Missing user_id');
+    }
 
     const platformConfig = PLATFORMS.find(p => p.platform === platform);
-    if (!platformConfig) return res.redirect(`${getBaseUrl()}/accounts?error=invalid_platform`);
+    if (!platformConfig) {
+      return sendPopupMessage(res, platform, false, 'Invalid platform');
+    }
 
+    // ── Already connected? ──────────────────────────────────
     const existing = await SocialAccount.findOne({ userId, platform });
-    if (existing) return res.redirect(`${getBaseUrl()}/accounts?connected=${platform}`);
+    if (existing) {
+      return sendPopupMessage(res, platform, true, 'Already connected');
+    }
 
+    // ── Demo mode ───────────────────────────────────────────
     if (demo === 'true' || !code) {
       const account = new SocialAccount({
         id:             uuidv4(),
@@ -527,15 +443,52 @@ router.get('/oauth/:platform/callback', async (req, res) => {
       });
       await account.save();
       logger.info('🔗', `${platform} connected (demo) for user ${userId}`);
-      return res.redirect(`${getBaseUrl()}/accounts?connected=${platform}`);
+      return sendPopupMessage(res, platform, true);
     }
 
-    logger.info('🔗', `${platform} real OAuth callback — code received for user ${userId}`);
-    return res.redirect(`${getBaseUrl()}/accounts?connected=${platform}`);
+    // ── 🆕 REAL OAUTH — Facebook / Instagram code exchange ───
+    if (platform === 'facebook' || platform === 'instagram') {
+      const credentials = OAUTH_CREDENTIALS[platform];
+      const redirectUri = `${getBackendUrl()}/api/accounts/oauth/${platform}/callback`;
 
-  } catch (error) {
-    logger.error('OAuth callback failed', error);
-    return res.redirect(`${getBaseUrl()}/accounts?error=oauth_failed`);
+      // 1. Exchange code for short-lived token
+      const tokenRes = await axios.get(
+        'https://graph.facebook.com/v19.0/oauth/access_token',
+        {
+          params: {
+            client_id:     credentials.clientId,
+            client_secret: credentials.clientSecret,
+            redirect_uri:  redirectUri,
+            code
+          }
+        }
+      );
+
+      const shortLivedToken = tokenRes.data.access_token;
+
+      // 2. Save via existing helpers
+      try {
+        if (platform === 'facebook') {
+          await saveFacebookAccount(userId, shortLivedToken);
+        } else {
+          await saveInstagramAccount(userId, shortLivedToken);
+        }
+        logger.info('🔗', `${platform} connected via OAuth popup for user ${userId}`);
+        return sendPopupMessage(res, platform, true);
+      } catch (saveErr) {
+        logger.error(`Save ${platform} failed`, saveErr.message);
+        return sendPopupMessage(res, platform, false, saveErr.message);
+      }
+    }
+
+    // ── Other platforms: log code, redirect (you can extend) ──
+    logger.info('🔗', `${platform} OAuth callback — code received for user ${userId}`);
+    return sendPopupMessage(res, platform, true);
+
+  } catch (err) {
+    const errMsg = err.response?.data?.error?.message || err.message || 'OAuth failed';
+    logger.error(`OAuth callback failed for ${req.params.platform}`, errMsg);
+    return sendPopupMessage(res, req.params.platform, false, errMsg);
   }
 });
 
@@ -559,13 +512,9 @@ router.delete('/:accountId', authMiddleware, async (req, res) => {
 });
 
 // ═════════════════════════════════════════════════════════════
-// NEW ROUTES — Pages support
+// Pages routes (unchanged)
 // ═════════════════════════════════════════════════════════════
 
-// ─────────────────────────────────────────────────────────────
-// GET /api/accounts/:accountId/pages
-// Returns all Facebook pages for a connected account
-// ─────────────────────────────────────────────────────────────
 router.get('/:accountId/pages', authMiddleware, async (req, res) => {
   try {
     const account = await SocialAccount.findOne({
@@ -573,15 +522,11 @@ router.get('/:accountId/pages', authMiddleware, async (req, res) => {
       userId: req.user.id
     });
 
-    if (!account) {
-      return res.status(404).json({ message: 'Account not found' });
-    }
-
+    if (!account) return res.status(404).json({ message: 'Account not found' });
     if (account.platform !== 'facebook') {
       return res.status(400).json({ message: 'Pages are only available for Facebook accounts' });
     }
 
-    // Return pages without tokens
     const pages = (account.pages || []).map(p => ({
       pageId:     p.pageId,
       pageName:   p.pageName,
@@ -596,56 +541,37 @@ router.get('/:accountId/pages', authMiddleware, async (req, res) => {
   }
 });
 
-// ─────────────────────────────────────────────────────────────
-// POST /api/accounts/:accountId/pages/:pageId/post
-// Post a message to a specific Facebook Page
-// Body: { message: "your text here" }
-// ─────────────────────────────────────────────────────────────
 router.post('/:accountId/pages/:pageId/post', authMiddleware, async (req, res) => {
   try {
     const { message } = req.body;
-
     if (!message || !message.trim()) {
       return res.status(400).json({ message: 'Message is required' });
     }
 
-    // Find the account
     const account = await SocialAccount.findOne({
       id:     req.params.accountId,
       userId: req.user.id
     });
+    if (!account) return res.status(404).json({ message: 'Account not found' });
 
-    if (!account) {
-      return res.status(404).json({ message: 'Account not found' });
-    }
-
-    // Find the specific page inside the account
     const page = (account.pages || []).find(p => p.pageId === req.params.pageId);
+    if (!page) return res.status(404).json({ message: 'Page not found on this account' });
 
-    if (!page) {
-      return res.status(404).json({ message: 'Page not found on this account' });
-    }
-
-    // Decrypt the page access token
     const pageAccessToken = decrypt(page.pageAccessToken);
 
-    // Post to Facebook Page via Graph API
     const fbResponse = await axios.post(
       `https://graph.facebook.com/v19.0/${page.pageId}/feed`,
-      {
-        message:      message.trim(),
-        access_token: pageAccessToken
-      }
+      { message: message.trim(), access_token: pageAccessToken }
     );
 
     logger.info('📘', `Posted to Facebook page ${page.pageName} — post ID: ${fbResponse.data.id}`);
 
     res.json({
-      success:    true,
-      message:    'Posted to Facebook page successfully',
-      pageName:   page.pageName,
-      pageId:     page.pageId,
-      fbPostId:   fbResponse.data.id   // e.g. "364011614307982_123456789"
+      success:  true,
+      message:  'Posted to Facebook page successfully',
+      pageName: page.pageName,
+      pageId:   page.pageId,
+      fbPostId: fbResponse.data.id
     });
 
   } catch (error) {
@@ -655,10 +581,6 @@ router.post('/:accountId/pages/:pageId/post', authMiddleware, async (req, res) =
   }
 });
 
-// ─────────────────────────────────────────────────────────────
-// PUT /api/accounts/:accountId/pages/:pageId/select
-// Toggle which page is selected as default for posting
-// ─────────────────────────────────────────────────────────────
 router.put('/:accountId/pages/:pageId/select', authMiddleware, async (req, res) => {
   try {
     const account = await SocialAccount.findOne({
@@ -668,7 +590,6 @@ router.put('/:accountId/pages/:pageId/select', authMiddleware, async (req, res) 
 
     if (!account) return res.status(404).json({ message: 'Account not found' });
 
-    // Toggle isSelected for the target page
     account.pages = (account.pages || []).map(p => ({
       ...p.toObject(),
       isSelected: p.pageId === req.params.pageId ? !p.isSelected : p.isSelected
@@ -690,85 +611,11 @@ router.put('/:accountId/pages/:pageId/select', authMiddleware, async (req, res) 
   }
 });
 
-// ─────────────────────────────────────────────────────────────
-// Instagram helpers — mirrors saveFacebookAccount exactly
-// ─────────────────────────────────────────────────────────────
-const saveInstagramAccount = async (userId, accessToken) => {
-
-  // ── Step 1: Exchange for long-lived token (reuse same FB function) ──────
-  const longLivedToken = await exchangeForLongLivedToken(accessToken);
-
-  // ── Step 2: Get all FB Pages + their linked IG Business accounts ─────────
-  const pagesRes = await axios.get('https://graph.facebook.com/me/accounts', {
-    params: {
-      fields:       'id,name,access_token,instagram_business_account,category',
-      access_token: longLivedToken
-    }
-  });
-  const pages = pagesRes.data.data || [];
-
-  // ── Step 3: Find pages that have a linked Instagram Business account ──────
-  const pagesWithIG = pages.filter(p => p.instagram_business_account?.id);
-
-  if (pagesWithIG.length === 0) {
-    throw new Error(
-      'No Instagram Business or Creator account found. ' +
-      'Please link your Instagram to a Facebook Page in Meta Business Suite first.'
-    );
-  }
-
-  // ── Step 4: Use first linked IG account ───────────────────────────────────
-  const page            = pagesWithIG[0];
-  const igId            = page.instagram_business_account.id;
-  const pageAccessToken = page.access_token;
-
-  // ── Step 5: Fetch full IG profile ─────────────────────────────────────────
-  const igRes = await axios.get(`https://graph.facebook.com/${igId}`, {
-    params: {
-      fields:       'id,username,name,biography,followers_count,media_count,profile_picture_url,website',
-      access_token: pageAccessToken
-    }
-  });
-  const ig = igRes.data;
-
-  // ── Step 6: Upsert — same shape as Facebook document ─────────────────────
-  const saved = await SocialAccount.findOneAndUpdate(
-    { userId, platform: 'instagram' },
-    {
-      id:             uuidv4(),
-      userId,
-      platform:       'instagram',
-      accountName:    ig.name || ig.username,
-      accountId:      ig.id,
-      profilePicture: ig.profile_picture_url || '',
-      accessToken:    encrypt(longLivedToken),
-      tokenExpiry:    new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
-      isActive:       true,
-      followers:      ig.followers_count || 0,
-      // ── pages array — same shape as Facebook, stores the linked FB page ──
-      pages: [{
-        pageId:          page.id,
-        pageName:        page.name,
-        pageAccessToken: encrypt(pageAccessToken),   // used for all IG Graph API calls
-        category:        page.category || '',
-        isSelected:      true
-      }],
-      connectedAt: new Date()
-    },
-    { upsert: true, new: true }
-  );
-
-  logger.info('🔗', `Instagram saved for user ${userId} — @${ig.username} via page "${page.name}"`);
-  return saved;
-};
-// ─────────────────────────────────────────────────────────────
-// POST /api/accounts/connect/instagram/token
-// ─────────────────────────────────────────────────────────────
+// ── Legacy Instagram token route (kept for backward compat) ───
 router.post('/connect/instagram/token', async (req, res) => {
   try {
     const { accessToken } = req.body;
 
-    // ── Auth: same JWT extraction as Facebook route ───────────────────────
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({ success: false, message: 'No token provided' });
@@ -791,7 +638,6 @@ router.post('/connect/instagram/token', async (req, res) => {
       return res.status(400).json({ success: false, message: 'accessToken is required' });
     }
 
-    // ── Validate the FB access token is real ──────────────────────────────
     try {
       await axios.get('https://graph.facebook.com/me', {
         params: { access_token: accessToken, fields: 'id' }
@@ -800,10 +646,8 @@ router.post('/connect/instagram/token', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid or expired Facebook token' });
     }
 
-    // ── Save Instagram account ────────────────────────────────────────────
     const saved = await saveInstagramAccount(userId, accessToken);
 
-    // ── Response — same shape as Facebook response ────────────────────────
     res.json({
       success:     true,
       message:     'Instagram connected successfully',
@@ -816,23 +660,17 @@ router.post('/connect/instagram/token', async (req, res) => {
     });
 
   } catch (err) {
-    // ── Handle the "no IG account linked" error cleanly ───────────────────
     if (err.message?.includes('No Instagram Business')) {
       return res.status(400).json({ success: false, message: err.message });
     }
-
     logger.error('Instagram token connect failed', err.response?.data || err.message);
-
     const fbCode = err.response?.data?.error?.code;
     if (fbCode === 190) return res.status(400).json({ success: false, message: 'Token invalid or expired' });
     if (fbCode === 200) return res.status(400).json({ success: false, message: 'Missing permissions' });
-
     res.status(500).json({ success: false, message: 'Failed to connect Instagram account' });
   }
 });
 
-
-// ── DELETE /api/accounts/disconnect/instagram/:accountId ──────────────────
 router.delete('/disconnect/instagram/:accountId', authMiddleware, async (req, res) => {
   try {
     const { accountId } = req.params;
@@ -849,33 +687,10 @@ router.delete('/disconnect/instagram/:accountId', authMiddleware, async (req, re
     }
 
     return res.json({ success: true, message: 'Instagram disconnected successfully' });
-
   } catch (err) {
     console.error('Instagram disconnect error:', err);
     return res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
-
-
-// ─────────────────────────────────────────────────────────────
-// THREADS — Complete OAuth Flow
-// Threads is separate from Facebook — uses threads.net OAuth
-// Add these routes to your accounts.js
-// ─────────────────────────────────────────────────────────────
-
-// ── Helper: extract userId from JWT (reuse across routes) ────
-const getUserIdFromToken = (req) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
-  try {
-    const token   = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    return decoded.user_id;
-  } catch {
-    return null;
-  }
-};
-
-
 
 module.exports = router;
