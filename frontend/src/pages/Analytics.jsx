@@ -123,25 +123,34 @@ export default function Analytics() {
               <p className="text-slate-600">Track your social media performance</p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            <div className="flex bg-slate-100 rounded-xl p-1">
-              {['7', '30', '90'].map((days) => (
-                <button
-                  key={days}
-                  onClick={() => setDateRange(days)}
-                  className={cn('px-4 py-2 rounded-lg font-medium text-sm transition-all',
-                    dateRange === days ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-600'
-                  )}
-                >
-                  {days}D
-                </button>
-              ))}
-            </div>
-            <Button onClick={handleSync} disabled={syncing} variant="outline" className="rounded-xl">
-              <RefreshCw className={cn('w-4 h-4 mr-2', syncing && 'animate-spin')} />
-              Sync Data
-            </Button>
-          </div>
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full sm:w-auto">
+  {/* Date Range Selector */}
+  <div className="flex bg-slate-100 rounded-xl p-1 w-full sm:w-auto">
+    {['7', '30', '90'].map((days) => (
+      <button
+        key={days}
+        onClick={() => setDateRange(days)}
+        className={cn(
+          'flex-1 sm:flex-none px-2 sm:px-4 py-2 rounded-lg font-medium text-xs sm:text-sm transition-all whitespace-nowrap',
+          dateRange === days ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-600 hover:text-slate-900'
+        )}
+      >
+        {days}D
+      </button>
+    ))}
+  </div>
+  
+  {/* Sync Button */}
+  <Button 
+    onClick={handleSync} 
+    disabled={syncing} 
+    variant="outline" 
+    className="rounded-xl w-full sm:w-auto flex justify-center items-center py-2 sm:py-auto"
+  >
+    <RefreshCw className={cn('w-4 h-4 mr-2', syncing && 'animate-spin')} />
+    Sync Data
+  </Button>
+</div>
         </div>
       </motion.div>
 
@@ -200,33 +209,39 @@ export default function Analytics() {
 
       {/* Platform Breakdown */}
       {overview?.platformSummary?.length > 0 && (
-        <div className="bg-white rounded-3xl border border-slate-100 p-6 shadow-card mb-8">
-          <h3 className="font-heading font-bold text-slate-900 mb-6">Platform Breakdown</h3>
-          <div className="space-y-3">
-            {overview.platformSummary.map((platform) => (
-              <div key={platform.platform} className="flex items-center justify-between p-4 rounded-xl bg-slate-50 hover:bg-slate-100 transition-colors">
-                <div className="flex items-center gap-4">
-                  <PlatformIcon platform={platform.platform} size="lg" showBackground />
-                  <div>
-                    <p className="font-medium text-slate-900 capitalize">{platform.platform}</p>
-                    <p className="text-sm text-slate-500">{platform.accountName}</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-8">
-                  <div className="text-right">
-                    <p className="text-sm text-slate-500">Followers</p>
-                    <p className="font-bold text-slate-900">{platform.followers.toLocaleString()}</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-sm text-slate-500">Engagement</p>
-                    <p className="font-bold text-slate-900">{platform.engagementRate}%</p>
-                  </div>
-                </div>
-              </div>
-            ))}
+  <div className="bg-white rounded-3xl border border-slate-100 p-4 sm:p-6 shadow-card mb-8">
+    <h3 className="font-heading font-bold text-slate-900 mb-4 sm:mb-6">Platform Breakdown</h3>
+    <div className="space-y-3 sm:space-y-4">
+      {overview.platformSummary.map((platform) => (
+        <div 
+          key={platform.platform} 
+          className="flex flex-col sm:flex-row sm:items-center justify-between p-4 rounded-xl bg-slate-50 hover:bg-slate-100 transition-colors gap-3 sm:gap-0"
+        >
+          {/* Left Side: Platform Icon & Name */}
+          <div className="flex items-center gap-3 sm:gap-4">
+            <PlatformIcon platform={platform.platform} size="lg" showBackground />
+            <div>
+              <p className="font-medium text-slate-900 capitalize text-sm sm:text-base">{platform.platform}</p>
+              <p className="text-xs sm:text-sm text-slate-500">{platform.accountName}</p>
+            </div>
+          </div>
+
+          {/* Right Side: Stats (Stacks on mobile, horizontal on desktop) */}
+          <div className="flex items-center justify-between sm:justify-end gap-4 sm:gap-8 border-t border-slate-200 sm:border-none pt-3 sm:pt-0 mt-1 sm:mt-0">
+            <div className="text-left sm:text-right">
+              <p className="text-xs sm:text-sm text-slate-500 mb-0.5">Followers</p>
+              <p className="font-bold text-slate-900 text-sm sm:text-base">{platform.followers.toLocaleString()}</p>
+            </div>
+            <div className="text-right">
+              <p className="text-xs sm:text-sm text-slate-500 mb-0.5">Engagement</p>
+              <p className="font-bold text-slate-900 text-sm sm:text-base">{platform.engagementRate}%</p>
+            </div>
           </div>
         </div>
-      )}
+      ))}
+    </div>
+  </div>
+)}
 
       {/* Top Posts */}
       <div className="bg-white rounded-3xl border border-slate-100 p-6 shadow-card">

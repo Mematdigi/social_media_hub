@@ -1,0 +1,16 @@
+// ============================================================
+// _platform-colors.scss — Auto-generated platform utilities
+// ============================================================
+@use 'variables' as *;
+
+// ── Background colors ─────────────────────────────────────────
+@each $name, $color in $platforms {
+  .bg-platform-#{$name}     { background-color: $color; }
+  .text-platform-#{$name}   { color: $color; }
+  .border-platform-#{$name} { border-color: $color; }
+
+  // Light tinted bg (10% opacity) for icon containers
+  .bg-platform-light-#{$name} {
+    background-color: rgba($color, 0.12);
+  }
+}
