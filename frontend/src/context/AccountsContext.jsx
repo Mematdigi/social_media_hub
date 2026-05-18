@@ -1,3 +1,4 @@
+// AccountsContext.jsx — fixed version
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { accountsAPI } from '../services/api';
 import { useAuth } from './AuthContext';
@@ -6,19 +7,17 @@ import { toast } from 'sonner';
 const AccountsContext = createContext(null);
 
 export const AccountsProvider = ({ children }) => {
-  const [accounts, setAccounts] = useState([]);
+  const [accounts, setAccounts]   = useState([]);
   const [platforms, setPlatforms] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const { isAuthenticated } = useAuth();
+  const [loading, setLoading]     = useState(true);
+  const { isAuthenticated }       = useAuth();
 
   const fetchAccounts = useCallback(async () => {
-    if (!isAuthenticated) {
-      setLoading(false);
-      return;
-    }
-
+    if (!isAuthenticated) return;
     try {
       const response = await accountsAPI.getAll();
+      // Log to verify pages[] are present
+      console.log('accounts[0].pages:', response.data[0]?.pages);
       setAccounts(response.data);
     } catch (error) {
       console.error('Failed to fetch accounts:', error);
@@ -26,44 +25,39 @@ export const AccountsProvider = ({ children }) => {
   }, [isAuthenticated]);
 
   const fetchPlatforms = useCallback(async () => {
-    if (!isAuthenticated) {
-      setLoading(false);
-      return;
-    }
-
+    if (!isAuthenticated) return;
     try {
       const response = await accountsAPI.getPlatforms();
       setPlatforms(response.data);
     } catch (error) {
       console.error('Failed to fetch platforms:', error);
-    } finally {
-      setLoading(false);
     }
   }, [isAuthenticated]);
 
+  // Single coordinated fetch — loading only clears when BOTH finish
   useEffect(() => {
-    if (isAuthenticated) {
-      fetchAccounts();
-      fetchPlatforms();
-    } else {
+    if (!isAuthenticated) {
       setAccounts([]);
       setPlatforms([]);
       setLoading(false);
+      return;
     }
+
+    setLoading(true);
+    Promise.all([fetchAccounts(), fetchPlatforms()])
+      .finally(() => setLoading(false));
   }, [isAuthenticated, fetchAccounts, fetchPlatforms]);
 
-  // Check for connected query param
+  // Handle OAuth redirect ?connected=facebook
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
+    const params    = new URLSearchParams(window.location.search);
     const connected = params.get('connected');
-    if (connected) {
-      toast.success(`${connected.charAt(0).toUpperCase() + connected.slice(1)} connected!`);
-      // Clean URL
-      window.history.replaceState({}, document.title, window.location.pathname);
-      // Refresh accounts
-      fetchAccounts();
-      fetchPlatforms();
-    }
+    if (!connected) return;
+
+    toast.success(`${connected.charAt(0).toUpperCase() + connected.slice(1)} connected!`);
+    window.history.replaceState({}, document.title, window.location.pathname);
+
+    Promise.all([fetchAccounts(), fetchPlatforms()]);
   }, [fetchAccounts, fetchPlatforms]);
 
   const disconnectAccount = async (accountId) => {
@@ -79,8 +73,7 @@ export const AccountsProvider = ({ children }) => {
   };
 
   const refreshAccounts = async () => {
-    await fetchAccounts();
-    await fetchPlatforms();
+    await Promise.all([fetchAccounts(), fetchPlatforms()]);
   };
 
   const connectedCount = platforms.filter((p) => p.connected).length;
@@ -101,9 +94,7 @@ export const AccountsProvider = ({ children }) => {
 
 export const useAccounts = () => {
   const context = useContext(AccountsContext);
-  if (!context) {
-    throw new Error('useAccounts must be used within an AccountsProvider');
-  }
+  if (!context) throw new Error('useAccounts must be used within an AccountsProvider');
   return context;
 };
 

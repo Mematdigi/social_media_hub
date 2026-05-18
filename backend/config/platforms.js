@@ -1,9 +1,9 @@
 const PLATFORMS = [
   { platform: 'facebook', name: 'Facebook', color: '#1877F2', oauthSupported: true },
   { platform: 'instagram', name: 'Instagram', color: '#E4405F', oauthSupported: true },
+  { platform: 'threads', name: 'Threads', color: '#000000', oauthSupported: true },
   { platform: 'twitter', name: 'Twitter / X', color: '#1DA1F2', oauthSupported: true },
   { platform: 'linkedin', name: 'LinkedIn', color: '#0A66C2', oauthSupported: true },
-  { platform: 'tiktok', name: 'TikTok', color: '#000000', oauthSupported: true },
   { platform: 'youtube', name: 'YouTube', color: '#FF0000', oauthSupported: true },
   { platform: 'pinterest', name: 'Pinterest', color: '#E60023', oauthSupported: true },
   { platform: 'snapchat', name: 'Snapchat', color: '#FFFC00', oauthSupported: false },
@@ -17,7 +17,6 @@ const PLATFORMS = [
   { platform: 'quora', name: 'Quora', color: '#B92B27', oauthSupported: false },
   { platform: 'vk', name: 'VK', color: '#4C75A3', oauthSupported: true },
   { platform: 'weibo', name: 'Weibo', color: '#E6162D', oauthSupported: false },
-  { platform: 'threads', name: 'Threads', color: '#000000', oauthSupported: false },
   { platform: 'mastodon', name: 'Mastodon', color: '#6364FF', oauthSupported: true },
   { platform: 'bluesky', name: 'Bluesky', color: '#0085FF', oauthSupported: false },
   { platform: 'behance', name: 'Behance', color: '#1769FF', oauthSupported: true },
