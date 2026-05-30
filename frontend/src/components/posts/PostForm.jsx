@@ -1,429 +1,410 @@
-import { X, Plus, Image, Clock, Send, Instagram } from 'lucide-react';
-import { PlatformSelector } from './PlatformSelector';
-import { SchedulePicker } from '../composer/SchedulePicker';
+import React, { useState } from 'react';
+import { motion } from 'framer-motion';
+import { Upload, X, Calendar, Send, Loader2, Youtube } from 'lucide-react';
 import { Button } from '../ui/button';
-import { Textarea } from '../ui/textarea';
-import { Label } from '../ui/label';
-import { Input } from '../ui/input';
-import { Loader } from '../common/Loader';
-import { PlatformIcon } from '../accounts/PlatformIcon';
-import { cn } from '../../lib/utils';
-import { useAccounts } from '../../context/AccountsContext';
-import React, { useState, useEffect } from 'react';
+import { accountsAPI } from '../../services/api';
+import { toast } from 'sonner';
 
-export const PostForm = ({ initialData = null, onSubmit, loading = false }) => {
-  const { accounts } = useAccounts();
+const MEDIA_FORMATS = {
+  facebook: { label: 'Facebook Post', accepted: '.jpg,.jpeg,.png,.gif,.mp4,.mov' },
+  instagram_feed: { label: 'Instagram Feed', accepted: '.jpg,.jpeg,.png,.gif' },
+  instagram_reel: { label: 'Instagram Reel (9:16)', accepted: '.mp4,.mov' },
+  instagram_story: { label: 'Instagram Story (9:16)', accepted: '.jpg,.jpeg,.png,.gif,.mp4' },
+  youtube: { label: 'YouTube Video', accepted: '.mp4,.mov,.avi,.mkv' },
+  twitter: { label: 'Twitter/X', accepted: '.jpg,.jpeg,.png,.gif,.mp4,.mov' },
+  tiktok: { label: 'TikTok (9:16)', accepted: '.mp4,.mov' },
+  linkedin: { label: 'LinkedIn', accepted: '.jpg,.jpeg,.png,.gif,.mp4,.mov' },
+};
 
-  const [content, setContent]             = useState('');
-  const [accountIds, setAccountIds]       = useState([]);
-  const [selectedPages, setSelectedPages] = useState({});
-  const [mediaUrls, setMediaUrls]         = useState(['']);
-  const [mediaType, setMediaType]         = useState('');   // ← NEW
-  const [status, setStatus]               = useState('draft');
-  const [scheduleMode, setScheduleMode]   = useState('now');
-  const [scheduledAt, setScheduledAt]     = useState(null);
-  const [errors, setErrors]               = useState({});
+export const PostForm = ({ initialPost = null, onSubmit, loading }) => {
+  const [content, setContent] = useState(initialPost?.content || '');
+  const [youtubeTitle, setYoutubeTitle] = useState(initialPost?.youtubeTitle || '');
+  const [mediaUrls, setMediaUrls] = useState(initialPost?.mediaUrls || []);
+  const [mediaFormats, setMediaFormats] = useState(initialPost?.mediaFormats || {});
+  const [selectedAccounts, setSelectedAccounts] = useState(initialPost?.accountIds || []);
+  const [status, setStatus] = useState(initialPost?.status || 'draft');
+  const [scheduledAt, setScheduledAt] = useState(initialPost?.scheduledAt || '');
+  const [accounts, setAccounts] = useState([]);
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [selectedFormat, setSelectedFormat] = useState('facebook');
 
-  // ── Check if any selected account is Instagram ──────────────────────────
-  const hasInstagram = accountIds.some(id => {
-    const acc = accounts?.find(a => a.id === id);
-    return acc?.platform === 'instagram';
-  });
+  React.useEffect(() => {
+    fetchAccounts();
+  }, []);
 
-
-const hasThreads = accountIds.some(id => {
-  const acc = accounts?.find(a => a.id === id);
-  return acc?.platform === 'threads';
-});
-  useEffect(() => {
-    if (initialData) {
-      setContent(initialData.content       || '');
-      setAccountIds(initialData.accountIds || []);
-      setSelectedPages(initialData.selectedPages || {});
-      setMediaUrls(initialData.mediaUrls?.length > 0 ? initialData.mediaUrls : ['']);
-      setMediaType(initialData.mediaType   || '');   // ← NEW
-      setStatus(initialData.status         || 'draft');
-      if (initialData.scheduledAt) {
-        setScheduleMode('later');
-        setScheduledAt(initialData.scheduledAt);
-      }
+  const fetchAccounts = async () => {
+    try {
+      const response = await accountsAPI.getPlatforms();
+      const data = response.data || response;
+      setAccounts(Array.isArray(data) ? data : []);
+    } catch (error) {
+      toast.error('Failed to load accounts');
     }
-  }, [initialData]);
-
-  const handlePlatformChange = ({ accountIds: ids, selectedPages: pages }) => {
-    setAccountIds(ids);
-    setSelectedPages(pages);
-    // Reset mediaType if Instagram is deselected
-    const stillHasIG = ids.some(id => {
-      const acc = accounts?.find(a => a.id === id);
-      return acc?.platform === 'instagram';
-    });
-    if (!stillHasIG) setMediaType('');
   };
 
-  const validate = () => {
-    const newErrors = {};
-    if (!content.trim()) newErrors.content = 'Content is required';
-    if (accountIds.length === 0) newErrors.accountIds = 'At least one account must be selected';
+  const handleFileUpload = async (e) => {
+    const files = Array.from(e.target.files);
+    if (!files.length) return;
 
-    const hasPageAccountWithNoPages = accountIds.some(id => {
-      const pages = selectedPages[id];
-      return pages !== undefined && pages.length === 0;
-    });
-    if (hasPageAccountWithNoPages) {
-      newErrors.accountIds = 'Please select at least one page for each connected account';
-    }
+    setUploading(true);
+    setUploadProgress(0);
+    try {
+      const newUrls = [...mediaUrls];
+      const newFormats = { ...mediaFormats };
 
-    // Instagram validation — require media URL if IMAGE or CAROUSEL selected
-    if (hasInstagram && (mediaType === 'IMAGE' || mediaType === 'CAROUSEL')) {
-      const filledUrls = mediaUrls.filter(u => u.trim());
-      if (!filledUrls.length) {
-        newErrors.mediaUrls = `${mediaType === 'CAROUSEL' ? 'Carousel' : 'Photo'} posts require at least one image URL`;
+      for (const file of files) {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const response = await accountsAPI.uploadMedia(formData, (progress) => {
+          setUploadProgress(progress);
+        });
+
+        const { url, mediaType } = response.data || response;
+        newUrls.push(url);
+        newFormats[url] = selectedFormat;
       }
-    }
-    if (hasInstagram && mediaType === 'REELS') {
-      const filledUrls = mediaUrls.filter(u => u.trim());
-      if (!filledUrls.length) {
-        newErrors.mediaUrls = 'Reels require a video URL';
-      }
-    }
-{/* ── Threads Info ───────────────────────────────────────────── */}
-// Add inside validate(), after Instagram validations:
-if (hasThreads && content.length > 500) {
-  newErrors.content = 'Threads has a 500 character limit';
-}
 
-    if (scheduleMode === 'later' && !scheduledAt) newErrors.scheduledAt = 'Please select a date and time';
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
+      setMediaUrls(newUrls);
+      setMediaFormats(newFormats);
+      toast.success(`${files.length} file(s) uploaded successfully`);
+    } catch (error) {
+      toast.error('Failed to upload file(s)');
+    } finally {
+      setUploading(false);
+      setUploadProgress(0);
+      e.target.value = '';
+    }
+  };
+
+  const removeMedia = (index) => {
+    const url = mediaUrls[index];
+    const newUrls = mediaUrls.filter((_, i) => i !== index);
+    const newFormats = { ...mediaFormats };
+    delete newFormats[url];
+
+    setMediaUrls(newUrls);
+    setMediaFormats(newFormats);
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!validate()) return;
+
+    if (!content.trim()) {
+      toast.error('Please write some content');
+      return;
+    }
+
+    if (selectedAccounts.length === 0) {
+      toast.error('Please select at least one account');
+      return;
+    }
+
+    if (scheduledAt && new Date(scheduledAt) < new Date()) {
+      toast.error('Scheduled time must be in the future');
+      return;
+    }
 
     const formData = {
-      content:      content.trim(),
-      accountIds,
-      selectedPages,
-      mediaUrls:    mediaUrls.filter(url => url.trim()),
-      mediaType:    mediaType || undefined,   // ← NEW
-      status:       scheduleMode === 'later' ? 'scheduled' : status,
-      scheduledAt:  scheduleMode === 'later' ? scheduledAt : null,
+      content: content.trim(),
+      youtubeTitle: youtubeTitle.trim() || undefined, // Only send if it has a value
+      accountIds: selectedAccounts,
+      mediaUrls,
+      mediaFormats,
+      status: scheduledAt ? 'scheduled' : status,
+      scheduledAt: scheduledAt ? new Date(scheduledAt).toISOString() : null,
     };
 
-    await onSubmit(formData);
+    onSubmit(formData);
   };
 
-  const addMediaUrl = () => {
-    if (mediaUrls.length < 10) setMediaUrls([...mediaUrls, '']);
-  };
-
-  const updateMediaUrl = (index, value) => {
-    const updated = [...mediaUrls];
-    updated[index] = value;
-    setMediaUrls(updated);
-  };
-
-  const removeMediaUrl = (index) => {
-    if (mediaUrls.length > 1) {
-      setMediaUrls(mediaUrls.filter((_, i) => i !== index));
-    } else {
-      setMediaUrls(['']);
-    }
-  };
-
-  const isEditing = !!initialData;
-
-  // Max media URLs depends on type
-  const maxUrls = mediaType === 'CAROUSEL' ? 10 : mediaType === 'REELS' ? 1 : 4;
+  const connectedAccounts = accounts.filter(acc => acc.connected && acc.account);
+  
+  // Check if any selected account belongs to YouTube
+  const isYoutubeSelected = selectedAccounts.some(accountId => {
+    const accountData = connectedAccounts.find(
+      acc => (acc.account.id || acc.account._id) === accountId
+    );
+    return accountData?.platform === 'youtube';
+  });
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
+      
+      {/* Dynamic YouTube Title Input (Only shows if YouTube is selected) */}
+      {isYoutubeSelected && (
+        <motion.div 
+          initial={{ opacity: 0, height: 0 }} 
+          animate={{ opacity: 1, height: 'auto' }} 
+          className="bg-red-50 p-4 rounded-2xl border border-red-100 mb-4"
+        >
+          <label className="block text-sm font-medium text-red-900 mb-2 flex items-center gap-2">
+            <Youtube className="w-4 h-4" /> YouTube Video Title
+          </label>
+          <input
+            type="text"
+            value={youtubeTitle}
+            onChange={(e) => setYoutubeTitle(e.target.value)}
+            placeholder="Enter an engaging title for your video..."
+            className="w-full px-4 py-2 rounded-xl border border-red-200 focus:border-red-500 focus:ring-2 focus:ring-red-200 outline-none"
+            required={isYoutubeSelected} // Make it required if YouTube is checked!
+          />
+        </motion.div>
+      )}
 
-      {/* ── Content ─────────────────────────────────────────────────────── */}
-      <div className="space-y-2">
-        <Label htmlFor="content" className="text-base font-medium">
-          Post Content
-        </Label>
-        <Textarea
-          id="content"
-          data-testid="post-content-input"
+      {/* Content (Acts as YouTube Description if YouTube is selected) */}
+      <div>
+        <label className="block text-sm font-medium text-slate-700 mb-2">
+          {isYoutubeSelected ? "What's your video about? (YouTube Description)" : "What's on your mind?"}
+        </label>
+        <textarea
           value={content}
-          onChange={e => setContent(e.target.value)}
-          placeholder="What's on your mind? Write your post here..."
-          className={cn(
-            'min-h-[150px] resize-y rounded-xl bg-slate-50 border-transparent',
-            'focus:bg-white focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10',
-            errors.content && 'border-red-300 focus:border-red-500'
-          )}
+          onChange={(e) => setContent(e.target.value)}
+          placeholder={isYoutubeSelected ? "Write your video description here..." : "Write your post content here..."}
+          rows={4}
+          className="w-full px-4 py-3 rounded-2xl border border-slate-200 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 outline-none resize-none"
         />
-        <div className="flex items-center justify-between">
-          {errors.content ? (
-            <span className="text-sm text-red-500">{errors.content}</span>
+        <div className="mt-2 text-xs text-slate-500">
+          {content.length} characters
+        </div>
+      </div>
+
+      {/* Media Upload */}
+      <div>
+        <label className="block text-sm font-medium text-slate-700 mb-3">
+          Add Media
+        </label>
+
+        {/* Format Selector */}
+        <div className="mb-4">
+          <label className="block text-xs font-medium text-slate-600 mb-2">
+            Media Format for Upload
+          </label>
+          <select
+            value={selectedFormat}
+            onChange={(e) => setSelectedFormat(e.target.value)}
+            className="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-indigo-500 outline-none text-sm"
+          >
+            {Object.entries(MEDIA_FORMATS).map(([key, val]) => (
+              <option key={key} value={key}>
+                {val.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Upload Input */}
+        <div className="relative">
+          <input
+            type="file"
+            id="media-input"
+            multiple
+            accept="image/*,video/*"
+            onChange={handleFileUpload}
+            disabled={uploading}
+            className="hidden"
+          />
+          <label
+            htmlFor="media-input"
+            className="flex items-center justify-center gap-3 px-4 py-6 rounded-2xl border-2 border-dashed border-slate-300 hover:border-indigo-400 cursor-pointer transition-colors"
+          >
+            {uploading
+              ? <Loader2 className="w-5 h-5 text-indigo-500 animate-spin" />
+              : <Upload className="w-5 h-5 text-slate-400" />
+            }
+            <div>
+              <p className="font-medium text-slate-700">
+                {uploading ? `Uploading... ${uploadProgress}%` : 'Click to upload or drag files'}
+              </p>
+              <p className="text-xs text-slate-500">
+                Images and videos up to 100MB
+              </p>
+            </div>
+          </label>
+        </div>
+
+        {/* Progress bar */}
+        {uploading && uploadProgress > 0 && (
+          <div className="mt-3">
+            <div className="flex justify-between text-xs text-slate-500 mb-1">
+              <span>Uploading...</span>
+              <span>{uploadProgress}%</span>
+            </div>
+            <div className="w-full bg-slate-200 rounded-full h-2">
+              <div
+                className="bg-indigo-500 h-2 rounded-full transition-all duration-300"
+                style={{ width: `${uploadProgress}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Media Preview */}
+        {mediaUrls.length > 0 && (
+          <div className="mt-4">
+            <p className="text-xs font-medium text-slate-600 mb-2">
+              Uploaded Media ({mediaUrls.length})
+            </p>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+              {mediaUrls.map((url, idx) => {
+                const format = mediaFormats[url] || 'unknown';
+                const isVideo = url.match(/\.(mp4|webm|ogg|mov)$/i);
+
+                return (
+                  <motion.div
+                    key={idx}
+                    initial={{ opacity: 0, scale: 0.9 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    className="relative group rounded-lg overflow-hidden bg-slate-100"
+                  >
+                    {isVideo ? (
+                      <video
+                        src={url}
+                        className="w-full h-24 object-cover"
+                        onError={(e) => { e.target.style.display = 'none'; }}
+                      />
+                    ) : (
+                      <img
+                        src={url}
+                        alt={`Media ${idx + 1}`}
+                        className="w-full h-24 object-cover"
+                        onError={(e) => { e.target.style.display = 'none'; }}
+                      />
+                    )}
+
+                    {/* Format Badge */}
+                    <div className="absolute top-1 left-1 bg-slate-900/80 text-white text-xs px-2 py-1 rounded">
+                      {MEDIA_FORMATS[format]?.label || format}
+                    </div>
+
+                    {/* Remove Button */}
+                    <button
+                      type="button"
+                      onClick={() => removeMedia(idx)}
+                      className="absolute top-1 right-1 bg-red-500 text-white p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </motion.div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Account Selection */}
+      <div>
+        <label className="block text-sm font-medium text-slate-700 mb-3">
+          Select Accounts
+        </label>
+        <div className="space-y-2">
+          {connectedAccounts.length === 0 ? (
+            <p className="text-sm text-slate-500">No connected accounts available</p>
           ) : (
-            <span className="text-sm text-slate-500">{content.length} characters</span>
+            connectedAccounts.map((acc) => {
+              // ✅ SAFETY FALLBACKS: Handle both SQL-style (Facebook) and Mongo-style (YouTube) data
+              const accountId = acc.account.id || acc.account._id;
+              const displayName = acc.account.accountName || acc.account.name;
+              const avatar = acc.account.profilePicture || acc.account.avatarUrl;
+
+              return (
+                <label
+                  key={accountId}
+                  className="flex items-center gap-3 p-3 rounded-lg border border-slate-200 hover:bg-slate-50 cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedAccounts.includes(accountId)}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setSelectedAccounts([...selectedAccounts, accountId]);
+                      } else {
+                        setSelectedAccounts(selectedAccounts.filter(id => id !== accountId));
+                      }
+                    }}
+                    className="rounded text-indigo-600 focus:ring-indigo-500"
+                  />
+                  
+                  {/* Account Avatar */}
+                  <img 
+                    src={avatar} 
+                    alt={displayName} 
+                    className="w-8 h-8 rounded-full object-cover" 
+                    onError={(e) => { e.target.src = `https://api.dicebear.com/7.x/initials/svg?seed=${acc.platform}`; }}
+                  />
+
+                  <div className="flex-1">
+                    <p className="font-medium text-slate-900">{displayName}</p>
+                    <p className="text-xs text-slate-500 capitalize">{acc.platform}</p>
+                  </div>
+                </label>
+              );
+            })
           )}
         </div>
       </div>
 
-      {/* ── Platform Selector ────────────────────────────────────────────── */}
-      <div className="space-y-2">
-        <Label className="text-base font-medium">Post to Accounts</Label>
-        <PlatformSelector
-          selectedIds={accountIds}
-          selectedPages={selectedPages}
-          onChange={handlePlatformChange}
+      {/* Scheduling */}
+      <div>
+        <label className="block text-sm font-medium text-slate-700 mb-2">
+          <Calendar className="w-4 h-4 inline mr-2" />
+          Schedule Post (Optional)
+        </label>
+        <input
+          type="datetime-local"
+          value={scheduledAt}
+          onChange={(e) => setScheduledAt(e.target.value)}
+          className="w-full px-4 py-2 rounded-2xl border border-slate-200 focus:border-indigo-500 outline-none"
         />
-        {errors.accountIds && (
-          <span className="text-sm text-red-500">{errors.accountIds}</span>
+        {scheduledAt && (
+          <p className="mt-2 text-xs text-indigo-600">
+            📅 Post will be published on {new Date(scheduledAt).toLocaleString()}
+          </p>
         )}
       </div>
 
-      {/* ── Instagram Post Type ─────────────────────────────────────────── */}
-      {hasInstagram && (
-        <div className="space-y-3">
-          <Label className="text-base font-medium flex items-center gap-2">
-            <PlatformIcon platform="instagram" size="sm" />
-            Instagram Post Type
-          </Label>
-          <div className="flex gap-2 flex-wrap">
-            {[
-              { value: '',         label: '⚡ Auto Detect',  hint: 'Picks type from your URL' },
-              { value: 'IMAGE',    label: '📷 Photo',         hint: 'Single image post' },
-              { value: 'REELS',    label: '🎬 Reel',          hint: 'Video post' },
-              { value: 'CAROUSEL', label: '🖼️ Carousel',      hint: 'Up to 10 images' },
-            ].map(opt => (
-              <button
-                key={opt.value}
-                type="button"
-                onClick={() => {
-                  setMediaType(opt.value);
-                  // Trim URLs to 1 if switching to REELS
-                  if (opt.value === 'REELS') {
-                    setMediaUrls([mediaUrls[0] || '']);
-                  }
-                }}
-                title={opt.hint}
-                className={cn(
-                  'px-4 py-2 rounded-xl text-sm font-medium transition-all border-2',
-                  mediaType === opt.value
-                    ? 'bg-pink-50 border-pink-300 text-pink-700'
-                    : 'bg-slate-50 border-transparent text-slate-600 hover:border-slate-200'
-                )}
-              >
-                {opt.label}
-              </button>
-            ))}
+      {/* Status */}
+      {!scheduledAt && (
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-2">
+            Save As
+          </label>
+          <div className="flex gap-3">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="status"
+                value="draft"
+                checked={status === 'draft'}
+                onChange={(e) => setStatus(e.target.value)}
+              />
+              <span className="text-sm text-slate-700">Draft</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="status"
+                value="published"
+                checked={status === 'published'}
+                onChange={(e) => setStatus(e.target.value)}
+              />
+              <span className="text-sm text-slate-700">Publish Now</span>
+            </label>
           </div>
-
-          {/* Inline hint per type */}
-          {mediaType === 'REELS' && (
-            <p className="text-xs text-slate-400 flex items-center gap-1">
-              🎬 Paste a public MP4/MOV video URL below. Reels may take up to 60s to process.
-            </p>
-          )}
-          {mediaType === 'CAROUSEL' && (
-            <p className="text-xs text-slate-400 flex items-center gap-1">
-              🖼️ Add up to 10 image URLs. Each URL becomes one slide.
-            </p>
-          )}
-          {mediaType === '' && (
-            <p className="text-xs text-slate-400">
-              Auto Detect: 1 image URL → Photo · 2+ image URLs → Carousel · video URL → Reel
-            </p>
-          )}
         </div>
       )}
 
-      {/* ── Threads Info ───────────────────────────────────────────── */}
-{hasThreads && (
-  <div className="space-y-2">
-    <Label className="text-base font-medium flex items-center gap-2">
-      <PlatformIcon platform="threads" size="sm" />
-      Threads
-    </Label>
-    <div className={cn(
-      'flex items-center gap-2 px-4 py-3 rounded-xl text-sm border-2',
-      content.length > 500
-        ? 'bg-red-50 border-red-200 text-red-600'
-        : content.length > 400
-        ? 'bg-amber-50 border-amber-200 text-amber-600'
-        : 'bg-slate-50 border-transparent text-slate-500'
-    )}>
-      <span>🧵</span>
-      <span>
-        {content.length}/500 characters
-        {content.length > 500 && ' — Threads limit exceeded'}
-        {content.length > 400 && content.length <= 500 && ' — approaching limit'}
-      </span>
-    </div>
-    <p className="text-xs text-slate-400">
-      Threads supports text-only posts or posts with a single image/video URL.
-      Only the first media URL will be used.
-    </p>
-  </div>
-)}
-
-      {/* ── Media URLs ──────────────────────────────────────────────────── */}
-      <div className="space-y-2">
-        <Label className="text-base font-medium flex items-center gap-2">
-          <Image className="w-4 h-4" />
-          Media URLs
-          {!hasInstagram && (
-            <span className="text-xs font-normal text-slate-400">(optional)</span>
-          )}
-          {hasInstagram && mediaType !== 'REELS' && mediaType !== '' && (
-            <span className="text-xs font-normal text-pink-400">required for Instagram</span>
-          )}
-        </Label>
-
-        <div className="space-y-2">
-          {mediaUrls.map((url, index) => (
-            <div key={index} className="flex items-center gap-2">
-              <Input
-                data-testid={`media-url-${index}`}
-                value={url}
-                onChange={e => updateMediaUrl(index, e.target.value)}
-                placeholder={
-                  mediaType === 'REELS'
-                    ? 'https://example.com/video.mp4'
-                    : `https://example.com/image${mediaUrls.length > 1 ? `-${index + 1}` : ''}.jpg`
-                }
-                className={cn(
-                  'flex-1 rounded-xl bg-slate-50 border-transparent focus:bg-white focus:border-indigo-500',
-                  errors.mediaUrls && !url.trim() && 'border-red-300'
-                )}
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="rounded-xl hover:bg-red-50 hover:text-red-600"
-                onClick={() => removeMediaUrl(index)}
-              >
-                <X className="w-4 h-4" />
-              </Button>
-            </div>
-          ))}
-        </div>
-
-        {errors.mediaUrls && (
-          <span className="text-sm text-red-500">{errors.mediaUrls}</span>
-        )}
-
-        {mediaUrls.length < maxUrls && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="rounded-xl text-indigo-600 hover:bg-indigo-50"
-            onClick={addMediaUrl}
-          >
-            <Plus className="w-4 h-4 mr-1" />
-            {mediaType === 'CAROUSEL'
-              ? `Add image (${mediaUrls.length}/${maxUrls})`
-              : 'Add another URL'}
-          </Button>
-        )}
-      </div>
-
-      {/* ── Schedule Toggle ──────────────────────────────────────────────── */}
-      <div className="space-y-4">
-        <Label className="text-base font-medium">When to Post</Label>
-        <div className="flex gap-3">
-          <button
-            type="button"
-            onClick={() => setScheduleMode('now')}
-            className={cn(
-              'flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-medium transition-all',
-              scheduleMode === 'now'
-                ? 'bg-indigo-100 text-indigo-700 border-2 border-indigo-200'
-                : 'bg-slate-50 text-slate-600 border-2 border-transparent hover:border-slate-200'
-            )}
-          >
-            <Send className="w-4 h-4" />
-            Post Now
-          </button>
-          <button
-            type="button"
-            onClick={() => setScheduleMode('later')}
-            className={cn(
-              'flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-medium transition-all',
-              scheduleMode === 'later'
-                ? 'bg-blue-100 text-blue-700 border-2 border-blue-200'
-                : 'bg-slate-50 text-slate-600 border-2 border-transparent hover:border-slate-200'
-            )}
-          >
-            <Clock className="w-4 h-4" />
-            Schedule for Later
-          </button>
-        </div>
-
-        {scheduleMode === 'later' && (
-          <div className="mt-4">
-            <SchedulePicker value={scheduledAt} onChange={setScheduledAt} />
-            {errors.scheduledAt && (
-              <span className="text-sm text-red-500 mt-2 block">{errors.scheduledAt}</span>
-            )}
-          </div>
-        )}
-
-        {scheduleMode === 'now' && (
-          <div className="flex gap-3 mt-4">
-            <button
-              type="button"
-              onClick={() => setStatus('draft')}
-              className={cn(
-                'flex items-center gap-2 px-4 py-2 rounded-xl font-medium transition-all',
-                status === 'draft'
-                  ? 'bg-yellow-100 text-yellow-700 border-2 border-yellow-200'
-                  : 'bg-slate-50 text-slate-600 border-2 border-transparent hover:border-slate-200'
-              )}
-            >
-              Save as Draft
-            </button>
-            <button
-              type="button"
-              onClick={() => setStatus('published')}
-              className={cn(
-                'flex items-center gap-2 px-4 py-2 rounded-xl font-medium transition-all',
-                status === 'published'
-                  ? 'bg-green-100 text-green-700 border-2 border-green-200'
-                  : 'bg-slate-50 text-slate-600 border-2 border-transparent hover:border-slate-200'
-              )}
-            >
-              Publish Now
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* ── Submit ───────────────────────────────────────────────────────── */}
-      <div className="pt-4">
-        <Button
-          type="submit"
-          data-testid="submit-post-btn"
-          disabled={loading}
-          className="w-full sm:w-auto rounded-full bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white px-8 py-3 font-bold shadow-button"
-        >
-          {loading ? (
-            <>
-              <Loader size="sm" className="mr-2 border-white border-t-transparent" />
-              Saving...
-            </>
-          ) : scheduleMode === 'later' ? (
-            'Schedule Post'
-          ) : isEditing ? (
-            'Save Changes'
-          ) : status === 'published' ? (
-            'Publish Now'
-          ) : (
-            'Save Draft'
-          )}
-        </Button>
-      </div>
-
+      {/* Submit Button */}
+      <Button
+        type="submit"
+        disabled={loading || uploading}
+        className="w-full rounded-full bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white py-3 font-medium"
+      >
+        <Send className="w-4 h-4 mr-2" />
+        {loading ? 'Creating Post...' : initialPost ? 'Update Post' : 'Create Post'}
+      </Button>
     </form>
   );
 };

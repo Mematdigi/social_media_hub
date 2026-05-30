@@ -20,7 +20,7 @@ const OAUTH_CREDENTIALS = {
   twitter:   { clientId: process.env.TW_CLIENT_ID,      clientSecret: process.env.TW_CLIENT_SECRET },
   linkedin:  { clientId: process.env.LI_CLIENT_ID,      clientSecret: process.env.LI_CLIENT_SECRET },
   tiktok:    { clientId: process.env.TT_CLIENT_ID,      clientSecret: process.env.TT_CLIENT_SECRET },
-  youtube:   { clientId: process.env.GOOGLE_CLIENT_ID,  clientSecret: process.env.GOOGLE_CLIENT_SECRET },
+  youtube:   { clientId: process.env.YOUTUBE_CLIENT_ID,  clientSecret: process.env.YOUTUBE_CLIENT_SECRET },
   pinterest: { clientId: process.env.PIN_CLIENT_ID,     clientSecret: process.env.PIN_CLIENT_SECRET },
   discord:   { clientId: process.env.DISCORD_CLIENT_ID, clientSecret: process.env.DISCORD_CLIENT_SECRET },
   twitch:    { clientId: process.env.TWITCH_CLIENT_ID,  clientSecret: process.env.TWITCH_CLIENT_SECRET },
@@ -29,8 +29,8 @@ const OAUTH_CREDENTIALS = {
   github:    { clientId: process.env.GITHUB_CLIENT_ID,  clientSecret: process.env.GITHUB_CLIENT_SECRET },
 };
 
-const getBaseUrl    = () => process.env.FRONTEND_URL || 'http://localhost:3000';
-const getBackendUrl = () => process.env.API_URL       || 'http://localhost:5000';
+const getBaseUrl    = () => process.env.FRONTEND_URL
+const getBackendUrl = () => process.env.FRONTEND_URL  
 
 // ─────────────────────────────────────────────────────────────
 // formatAccount — includes pages[]
@@ -190,6 +190,9 @@ const saveInstagramAccount = async (userId, accessToken) => {
 const sendPopupMessage = (res, platform, success, message = '') => {
   const FRONTEND_URL = getBaseUrl();
   const safeMsg = String(message).replace(/'/g, "\\'").replace(/\n/g, ' ');
+  const redirectUrl = success 
+    ? `${FRONTEND_URL}/accounts?connected=${platform}`
+    : `${FRONTEND_URL}/accounts?error=${platform}_failed&msg=${encodeURIComponent(safeMsg)}`;
 
   return res.send(`
     <!DOCTYPE html>
@@ -199,33 +202,95 @@ const sendPopupMessage = (res, platform, success, message = '') => {
         <div style="display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;">
           <div style="font-size:48px;margin-bottom:16px;">${success ? '✅' : '❌'}</div>
           <p style="color:#475569;font-size:16px;text-align:center;padding:0 20px;">
-            ${success ? platform + ' connected! Closing...' : 'Connection failed. Closing...'}
+            ${success ? 'Success! Returning to dashboard...' : 'Connection failed. Closing...'}
           </p>
         </div>
         <script>
-          try {
+          // Wait 1.5 seconds so the user sees the checkmark
+          setTimeout(() => {
             if (window.opener && !window.opener.closed) {
+              // Tell the main window what happened
               window.opener.postMessage(
                 {
+                  source: 'socialhub_oauth', // Unique tag so frontend knows it's from us
                   platform: '${platform}',
-                  success:  ${success},
-                  message:  '${safeMsg}'
+                  success: ${success},
+                  message: '${safeMsg}'
                 },
                 '*'
               );
-              setTimeout(() => window.close(), 800);
+              window.close(); // Close this popup window
             } else {
-              window.location.href = '${FRONTEND_URL}/accounts?${success ? 'connected=' + platform : 'error=' + platform + '_failed'}';
+              // Fallback if they didn't use a popup
+              window.location.href = '${redirectUrl}';
             }
-          } catch (e) {
-            window.location.href = '${FRONTEND_URL}/accounts?${success ? 'connected=' + platform : 'error=' + platform + '_failed'}';
-          }
+          }, 1500);
         </script>
       </body>
     </html>
   `);
 };
 
+const { google } = require('googleapis');
+// const { encrypt } = require('../utils/encryption'); // Make sure your encrypt utility is imported!
+
+const saveYouTubeAccount= async(userId, tokens)=>{
+  // Set up the client with the tokens we just got
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.YOUTUBE_CLIENT_ID,
+    process.env.YOUTUBE_CLIENT_SECRET
+  );
+  oauth2Client.setCredentials(tokens);
+
+  // Fetch the user's YouTube Channel details
+  const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
+  const channelRes = await youtube.channels.list({ 
+    part: 'snippet', 
+    mine: true 
+  });
+
+  if (!channelRes.data.items || channelRes.data.items.length === 0) {
+    throw new Error('No YouTube channel found for this Google account.');
+  }
+
+  const channel = channelRes.data.items[0];
+  const channelId = channel.id;
+  const channelName = channel.snippet.title;
+  const channelPic = channel.snippet.thumbnails.default.url;
+
+  // Preserve the refresh token and check for existing custom ID
+  const existingAccount = await SocialAccount.findOne({ 
+    userId, 
+    platform: 'youtube', 
+    accountId: channelId 
+  });
+
+  let finalRefreshToken = tokens.refresh_token ? encrypt(tokens.refresh_token) : null;
+  if (!finalRefreshToken && existingAccount && existingAccount.refreshToken) {
+    finalRefreshToken = existingAccount.refreshToken; 
+  }
+
+  // 👈 If the account exists, keep its ID. If it's new, generate a new UUID!
+  const customId = existingAccount && existingAccount.id ? existingAccount.id : uuidv4();
+
+  // Save to Database
+  await SocialAccount.findOneAndUpdate(
+    { userId, platform: 'youtube', accountId: channelId },
+    {
+      id: customId, // 👈 SAVE THE CUSTOM ID HERE
+      userId,
+      platform: 'youtube',
+      accountId: channelId,
+      name: channelName,
+      avatarUrl: channelPic,
+      accessToken: encrypt(tokens.access_token),
+      refreshToken: finalRefreshToken,
+      status: 'connected',
+      updatedAt: new Date()
+    },
+    { upsert: true, new: true }
+  );
+}
 
 // ═════════════════════════════════════════════════════════════
 // EXISTING ROUTES
@@ -355,7 +420,7 @@ router.get('/oauth/:platform', async (req, res) => {
     const redirectUri = `${getBackendUrl()}/api/accounts/oauth/${platform}/callback`;
     const state       = Buffer.from(JSON.stringify({ user_id, platform })).toString('base64');
 
-    // 🆕 INLINE FB / IG OAUTH URL — does not depend on buildAuthUrl
+    // 🆕 INLINE FB / IG OAUTH URL
     if (platform === 'facebook' || platform === 'instagram') {
       const scope = platform === 'facebook'
         ? 'public_profile,pages_show_list,pages_read_engagement,pages_manage_posts'
@@ -371,6 +436,28 @@ router.get('/oauth/:platform', async (req, res) => {
         `&auth_type=rerequest`;
 
       logger.info('🔗', `Redirecting popup to ${platform} OAuth for user ${user_id}`);
+      return res.redirect(authUrl);
+    }
+
+    // 🆕 YOUTUBE OAUTH URL
+    if (platform === 'youtube') {
+      const scope = [
+        'https://www.googleapis.com/auth/youtube.upload',
+        'https://www.googleapis.com/auth/youtube.readonly',
+        'https://www.googleapis.com/auth/userinfo.profile'
+      ].join(' ');
+
+      const authUrl =
+        `https://accounts.google.com/o/oauth2/v2/auth?` +
+        `client_id=${credentials.clientId}` +
+        `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+        `&scope=${encodeURIComponent(scope)}` +
+        `&state=${state}` +
+        `&response_type=code` +
+        `&access_type=offline` +  // CRITICAL: Gets the refresh token
+        `&prompt=consent`;        // CRITICAL: Forces consent screen to ensure refresh token is sent
+
+      logger.info('🔗', `Redirecting to YouTube OAuth for user ${user_id}`);
       return res.redirect(authUrl);
     }
 
@@ -390,6 +477,8 @@ router.get('/oauth/:platform', async (req, res) => {
 // 🆕 OAUTH CALLBACK — exchanges code for token, saves account,
 // returns HTML that postMessage's the opener and closes popup.
 // ═════════════════════════════════════════════════════════════
+// Find this in backend/routes/accounts.js and replace the callback route
+
 router.get('/oauth/:platform/callback', async (req, res) => {
   try {
     const { platform } = req.params;
@@ -481,6 +570,34 @@ router.get('/oauth/:platform/callback', async (req, res) => {
       }
     }
 
+    if (platform === 'youtube') {
+      const { google } = require('googleapis');
+      const credentials = OAUTH_CREDENTIALS[platform];
+      const redirectUri = `${getBackendUrl()}/api/accounts/oauth/${platform}/callback`;
+
+      try {
+        // 1. Initialize OAuth client
+        const oauth2Client = new google.auth.OAuth2(
+          credentials.clientId,
+          credentials.clientSecret,
+          redirectUri
+        );
+
+        // 2. Exchange code for tokens (access_token & refresh_token)
+        const { tokens } = await oauth2Client.getToken(code);
+
+        // 3. Save via helper function
+        await saveYouTubeAccount(userId, tokens);
+
+        logger.info('🔗', `youtube connected via OAuth popup for user ${userId}`);
+        return sendPopupMessage(res, platform, true);
+        
+      } catch (saveErr) {
+        logger.error(`Save ${platform} failed`, saveErr.message);
+        return sendPopupMessage(res, platform, false, saveErr.message);
+      }
+    }
+
     // ── Other platforms: log code, redirect (you can extend) ──
     logger.info('🔗', `${platform} OAuth callback — code received for user ${userId}`);
     return sendPopupMessage(res, platform, true);
@@ -491,6 +608,7 @@ router.get('/oauth/:platform/callback', async (req, res) => {
     return sendPopupMessage(res, req.params.platform, false, errMsg);
   }
 });
+
 
 router.delete('/:accountId', authMiddleware, async (req, res) => {
   try {

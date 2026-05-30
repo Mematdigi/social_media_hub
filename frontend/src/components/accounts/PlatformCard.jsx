@@ -12,13 +12,9 @@ import { getPlatformConfig } from '../../utils/platformConfig';
 import { cn } from '../../lib/utils';
 import { accountsAPI } from '../../services/api';
 
-/* ─────────────────────────────────────────────────────────────
- *  IMPORTANT: This must point at YOUR backend.
- *  Your backend .env has PORT=5000, so REACT_APP_BACKEND_URL
- *  must be http://localhost:5000 (NOT 8001).
- * ─────────────────────────────────────────────────────────── */
-const API_URL   = process.env.API_URL || 'http://localhost:5000';
+const API_URL   = process.env.REACT_APP_BACKEND_URL;
 const TOKEN_KEY = 'socialhub_token';
+
 export const PlatformCard = ({
   platform,
   connected      = false,
@@ -38,7 +34,6 @@ export const PlatformCard = ({
 
   const config = getPlatformConfig(platform);
 
-  // ── Auth helpers ──────────────────────────────────────────────────────────
   const getAuthToken = () => localStorage.getItem(TOKEN_KEY);
 
   const getUserId = () => {
@@ -59,7 +54,6 @@ export const PlatformCard = ({
     } catch { return true; }
   };
 
-  // ── Cleanup on unmount ───────────────────────────────────────────────────
   useEffect(() => {
     return () => {
       clearInterval(intervalRef.current);
@@ -69,13 +63,45 @@ export const PlatformCard = ({
     };
   }, []);
 
-  /* ═════════════════════════════════════════════════════════════
-   *  🆕 META POPUP CONNECT — replaces the FB SDK approach
-   *  Opens a SEPARATE browser window to the backend OAuth route.
-   *  That window has its own browsing context, so your app's
-   *  FB Login SDK listener cannot see it → no /dashboard redirect.
-   * ═══════════════════════════════════════════════════════════ */
-  const connectMetaPopup = (targetPlatform) => {
+  useEffect(() => {
+    // 1. Create the listener function
+    const handleMessage = (event) => {
+      // Check if the message is coming from our backend popup
+      if (event.data && event.data.source === 'socialhub_oauth') {
+        const { platform, success, message } = event.data;
+
+        if (success) {
+          // Show the success toast
+          toast.success(`${platform.charAt(0).toUpperCase() + platform.slice(1)} connected successfully!`);
+          
+          // Slight delay to let the toast appear, then refresh the page to update data
+          setTimeout(() => {
+            window.location.href = `/accounts?connected=${platform}`;
+          }, 1000);
+          
+        } else {
+          toast.error(`Failed to connect ${platform}: ${message}`);
+        }
+      }
+    };
+
+    // 2. Attach the listener to the browser
+    window.addEventListener('message', handleMessage);
+    handlerRef.current = handleMessage;
+
+    // 3. Cleanup when component unmounts
+    return () => {
+      clearInterval(intervalRef.current);
+      if (handlerRef.current) {
+        window.removeEventListener('message', handlerRef.current);
+      }
+    };
+  }, []); // Run once on mount
+  
+  // ════════════════════════════════════════════════════════════
+  // ✅ HARDCODED Facebook OAuth (Direct to Facebook)
+  // ════════════════════════════════════════════════════════════
+  const connectFacebookHardcoded = () => {
     setConnectError('');
 
     if (isTokenExpired()) {
@@ -92,19 +118,35 @@ export const PlatformCard = ({
 
     setConnecting(true);
 
-    // ── Open popup window centred on screen ──────────────────
+    const FACEBOOK_CLIENT_ID = '1108979541367564';
+    const REDIRECT_URI = 'https://media.mematdigi.com/api/accounts/oauth/facebook/callback';
+    const STATE = btoa(JSON.stringify({ user_id: userId, platform: 'facebook' }));
+    const SCOPE = 'public_profile,pages_show_list,pages_read_engagement,pages_manage_posts';
+
+    const facebookAuthUrl =
+      `https://www.facebook.com/v19.0/dialog/oauth?` +
+      `client_id=${FACEBOOK_CLIENT_ID}` +
+      `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
+      `&scope=${encodeURIComponent(SCOPE)}` +
+      `&state=${encodeURIComponent(STATE)}` +
+      `&response_type=code` +
+      `&auth_type=rerequest`;
+
+    console.log('🔗 Facebook OAuth URL:', facebookAuthUrl);
+
     const w = 600;
     const h = 720;
-    const left = (window.screen.width  - w) / 2;
-    const top  = (window.screen.height - h) / 2;
+    const left = (window.screen.width - w) / 2;
+    const top = (window.screen.height - h) / 2;
 
     const popup = window.open(
-      `${API_URL}/api/accounts/oauth/${targetPlatform}?user_id=${encodeURIComponent(userId)}`,
-      `connect_${targetPlatform}`,
+      facebookAuthUrl,
+      'facebook_oauth',
       `width=${w},height=${h},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no`
     );
 
     if (!popup) {
+      console.error('❌ Popup blocked');
       setConnecting(false);
       setConnectError('Popup blocked. Please allow popups for this site and try again.');
       return;
@@ -112,46 +154,85 @@ export const PlatformCard = ({
 
     popupRef.current = popup;
 
-    // ── Cleanup helper used by both handlers below ───────────
-    const cleanup = () => {
-      clearInterval(intervalRef.current);
-      if (handlerRef.current) {
-        window.removeEventListener('message', handlerRef.current);
-        handlerRef.current = null;
+    const checkPopup = setInterval(() => {
+      if (popup.closed) {
+        clearInterval(checkPopup);
+        setConnecting(false);
       }
-      setConnecting(false);
-    };
-
-    // ── postMessage listener ─────────────────────────────────
-    const handler = (event) => {
-      const data = event.data || {};
-      // We only care about messages naming this platform
-      if (data.platform !== targetPlatform) return;
-
-      cleanup();
-      if (popup && !popup.closed) popup.close();
-
-      if (data.success) {
-        if (onConnected) {
-          onConnected(targetPlatform);
-        } else {
-          window.location.href = `/accounts?connected=${targetPlatform}`;
-        }
-      } else {
-        setConnectError(data.message || `Failed to connect ${config.name}`);
-      }
-    };
-
-    handlerRef.current = handler;
-    window.addEventListener('message', handler);
-
-    // ── Detect manual popup close ───────────────────────────
-    intervalRef.current = setInterval(() => {
-      if (popup.closed) cleanup();
     }, 500);
+
+    intervalRef.current = checkPopup;
   };
 
-  // ── Threads (unchanged — already uses popup via accountsAPI) ─────────────
+  // ════════════════════════════════════════════════════════════
+  // ✅ HARDCODED Instagram OAuth (Direct to Facebook)
+  // ════════════════════════════════════════════════════════════
+  const connectInstagramHardcoded = () => {
+    setConnectError('');
+
+    if (isTokenExpired()) {
+      localStorage.removeItem(TOKEN_KEY);
+      window.location.href = '/login';
+      return;
+    }
+
+    const userId = getUserId();
+    if (!userId) {
+      setConnectError('You must be logged in.');
+      return;
+    }
+
+    setConnecting(true);
+
+    const FACEBOOK_CLIENT_ID = '1108979541367564';
+    const REDIRECT_URI = 'https://media.mematdigi.com/api/accounts/oauth/instagram/callback';
+    const STATE = btoa(JSON.stringify({ user_id: userId, platform: 'instagram' }));
+    const SCOPE = 'public_profile,pages_show_list,pages_read_engagement,instagram_basic,instagram_content_publish,business_management';
+
+    const instagramAuthUrl =
+      `https://www.facebook.com/v19.0/dialog/oauth?` +
+      `client_id=${FACEBOOK_CLIENT_ID}` +
+      `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
+      `&scope=${encodeURIComponent(SCOPE)}` +
+      `&state=${encodeURIComponent(STATE)}` +
+      `&response_type=code` +
+      `&auth_type=rerequest`;
+
+    console.log('🔗 Instagram OAuth URL:', instagramAuthUrl);
+
+    const w = 600;
+    const h = 720;
+    const left = (window.screen.width - w) / 2;
+    const top = (window.screen.height - h) / 2;
+
+    const popup = window.open(
+      instagramAuthUrl,
+      'instagram_oauth',
+      `width=${w},height=${h},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no`
+    );
+
+    if (!popup) {
+      console.error('❌ Popup blocked');
+      setConnecting(false);
+      setConnectError('Popup blocked. Please allow popups for this site and try again.');
+      return;
+    }
+
+    popupRef.current = popup;
+
+    const checkPopup = setInterval(() => {
+      if (popup.closed) {
+        clearInterval(checkPopup);
+        setConnecting(false);
+      }
+    }, 500);
+
+    intervalRef.current = checkPopup;
+  };
+
+  // ════════════════════════════════════════════════════════════
+  // Other platforms - Backend redirect
+  // ════════════════════════════════════════════════════════════
   const connectThreadsPopup = () => {
     setConnectError('');
     setConnecting(true);
@@ -172,7 +253,6 @@ export const PlatformCard = ({
       });
   };
 
-  // ── Generic OAuth redirect (Twitter, LinkedIn, etc.) ─────────────────────
   const connectOAuth = () => {
     setConnectError('');
     if (isTokenExpired()) {
@@ -185,26 +265,44 @@ export const PlatformCard = ({
       setConnectError('You must be logged in.');
       return;
     }
+    // This will redirect the user to your backend to start the OAuth flow (e.g. YouTube)
+    // When the backend callback finishes, it automatically redirects back to /accounts
     window.location.href = `${API_URL}/api/accounts/oauth/${platform}?user_id=${userId}`;
   };
 
-  // ── Main connect handler ──────────────────────────────────────────────────
+  // ════════════════════════════════════════════════════════════
+  // Main Connect Handler
+  // ════════════════════════════════════════════════════════════
   const handleConnect = () => {
-    if (platform === 'facebook' || platform === 'instagram') {
-      connectMetaPopup(platform);   // 🆕 popup OAuth (no FB SDK)
+    if (platform === 'facebook') {
+      connectFacebookHardcoded();
+    } else if (platform === 'instagram') {
+      connectInstagramHardcoded();
     } else if (platform === 'threads') {
       connectThreadsPopup();
     } else {
-      connectOAuth();
+      // Handles YouTube (and any other standard OAuth platform)
+      connectOAuth(); 
     }
   };
 
-  // ── Disconnect ────────────────────────────────────────────────────────────
-  const handleDisconnect = async () => {
+ const handleDisconnect = async () => {
     if (!account) return;
     setDisconnecting(true);
     try {
-      await onDisconnect(account.id);
+      // ✅ Fallback to account._id for YouTube/MongoDB raw documents
+      const targetId = account.id || account._id; 
+      
+      if (!targetId) {
+        console.error("No account ID found to disconnect:", account);
+        setConnectError("Cannot disconnect: Account ID missing.");
+        return;
+      }
+
+      await onDisconnect(targetId);
+      
+    } catch (error) {
+      console.error("Disconnect error:", error);
     } finally {
       setDisconnecting(false);
       setShowDisconnectDialog(false);
@@ -233,7 +331,6 @@ export const PlatformCard = ({
             : 'border-slate-100 opacity-60'
         )}
       >
-        {/* Header */}
         <div className="flex items-start justify-between mb-4">
           <PlatformIcon platform={platform} size="lg" showBackground />
           {connected ? (
@@ -246,25 +343,23 @@ export const PlatformCard = ({
           ) : null}
         </div>
 
-        {/* Platform name */}
         <h3 className="font-heading font-bold text-slate-900 mb-1">
           {config.name}
         </h3>
 
-        {/* Connected */}
         {connected && account ? (
           <>
             <div className="flex items-center gap-2 mb-3">
               <img
-                src={account.profilePicture}
-                alt={account.accountName}
+                src={account.profilePicture || account.avatarUrl}
+                alt={account.accountName || account.name}
                 className="w-6 h-6 rounded-full object-cover"
                 onError={(e) => {
                   e.target.src = `https://api.dicebear.com/7.x/initials/svg?seed=${platform}`;
                 }}
               />
               <span className="text-sm text-slate-600 truncate">
-                {account.accountName}
+                {account.accountName || account.name}
               </span>
             </div>
 
@@ -329,7 +424,6 @@ export const PlatformCard = ({
         )}
       </motion.div>
 
-      {/* Disconnect dialog */}
       <AlertDialog open={showDisconnectDialog} onOpenChange={setShowDisconnectDialog}>
         <AlertDialogContent className="rounded-3xl">
           <AlertDialogHeader>

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Link2, FileText, FileCheck, FilePen, Pencil, TrendingUp } from 'lucide-react';
+import { Link2, FileText, FileCheck, FilePen, Pencil, TrendingUp, Plus } from 'lucide-react';
 import { PageWrapper } from '../components/layout/PageWrapper';
 import { Badge } from '../components/common/Badge';
 import { PlatformIcon } from '../components/accounts/PlatformIcon';
@@ -62,18 +62,32 @@ export default function Dashboard() {
 
   return (
     <PageWrapper>
-      {/* Welcome Header */}
+      {/* Welcome Header with Create Post Button */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="mb-10"
+        className="mb-10 flex flex-col sm:flex-row sm:items-start justify-between gap-4"
       >
-        <h1 className="text-3xl md:text-4xl font-heading font-bold text-slate-900 mb-2">
-          Welcome back, {user?.name?.split(' ')[0]}
-        </h1>
-        <p className="text-lg text-slate-600">
-          Here's what's happening with your social accounts today.
-        </p>
+        <div>
+          <h1 className="text-3xl md:text-4xl font-heading font-bold text-slate-900 mb-2">
+            Welcome back, {user?.name?.split(' ')[0]}
+          </h1>
+          <p className="text-lg text-slate-600">
+            Here's what's happening with your social accounts today.
+          </p>
+        </div>
+        
+        {/* New Create Post Button */}
+        <div className="shrink-0 pt-1">
+          <Button
+            data-testid="dashboard-new-post-btn"
+            className="rounded-full bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white px-6 shadow-button w-full sm:w-auto"
+            onClick={() => navigate('/posts/new')}
+          >
+            <Plus className="w-5 h-5 mr-2" />
+            New Post
+          </Button>
+        </div>
       </motion.div>
 
       {/* Stats Grid */}
@@ -116,33 +130,33 @@ export default function Dashboard() {
         className="bg-white rounded-3xl border border-slate-100 shadow-card overflow-hidden"
       >
         <div className="flex items-center justify-between p-4 sm:p-6 border-b border-slate-100 gap-2 sm:gap-4">
-  <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-    {/* Icon Container */}
-    <div className="w-8 h-8 sm:w-10 sm:h-10 shrink-0 rounded-xl sm:rounded-2xl bg-indigo-50 flex items-center justify-center">
-      <TrendingUp className="w-4 h-4 sm:w-5 sm:h-5 text-indigo-600" />
-    </div>
-    
-    {/* Text Container */}
-    <div className="min-w-0">
-      <h2 className="font-heading font-bold text-slate-900 text-base sm:text-lg truncate">
-        Recent Posts
-      </h2>
-      <p className="text-xs sm:text-sm text-slate-500 truncate">
-        Your latest content
-      </p>
-    </div>
-  </div>
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+            {/* Icon Container */}
+            <div className="w-8 h-8 sm:w-10 sm:h-10 shrink-0 rounded-xl sm:rounded-2xl bg-indigo-50 flex items-center justify-center">
+              <TrendingUp className="w-4 h-4 sm:w-5 sm:h-5 text-indigo-600" />
+            </div>
+            
+            {/* Text Container */}
+            <div className="min-w-0">
+              <h2 className="font-heading font-bold text-slate-900 text-base sm:text-lg truncate">
+                Recent Posts
+              </h2>
+              <p className="text-xs sm:text-sm text-slate-500 truncate">
+                Your latest content
+              </p>
+            </div>
+          </div>
 
-  {/* Action Button */}
-  <Button
-    variant="ghost"
-    size="sm"
-    className="shrink-0 rounded-full text-indigo-600 hover:bg-indigo-50 text-xs sm:text-sm px-3 sm:px-4"
-    onClick={() => navigate('/posts')}
-  >
-    View All
-  </Button>
-</div>
+          {/* Action Button */}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="shrink-0 rounded-full text-indigo-600 hover:bg-indigo-50 text-xs sm:text-sm px-3 sm:px-4"
+            onClick={() => navigate('/posts')}
+          >
+            View All
+          </Button>
+        </div>
 
         {loading ? (
           <div className="p-10 flex items-center justify-center">
@@ -163,55 +177,55 @@ export default function Dashboard() {
           </div>
         ) : (
           <div className="divide-y divide-slate-100">
-  {recentPosts.map((post) => (
-    <div
-      key={post.id}
-      data-testid={`recent-post-${post.id}`}
-      className="p-3 sm:p-4 hover:bg-slate-50 transition-colors"
-    >
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
-        
-        {/* Main Content Area */}
-        <div className="flex-1 min-w-0 w-full">
-          <p className="text-sm sm:text-base text-slate-900 font-medium truncate">
-            {post.content.length > 60 ? `${post.content.substring(0, 60)}...` : post.content}
-          </p>
-          <div className="flex items-center gap-3 mt-1.5 sm:mt-1">
-            <div className="flex items-center gap-1">
-              {post.accounts?.slice(0, 3).map((acc) => (
-                <PlatformIcon key={acc.id} platform={acc.platform} size="sm" />
-              ))}
-              {post.platforms?.length > 3 && (
-                <span className="text-[10px] sm:text-xs text-slate-500 ml-1">
-                  +{post.platforms.length - 3}
-                </span>
-              )}
-            </div>
-            <span className="text-[10px] sm:text-xs text-slate-400">
-              {format(new Date(post.createdAt), 'MMM d, yyyy')}
-            </span>
-          </div>
-        </div>
+            {recentPosts.map((post) => (
+              <div
+                key={post.id}
+                data-testid={`recent-post-${post.id}`}
+                className="p-3 sm:p-4 hover:bg-slate-50 transition-colors"
+              >
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
+                  
+                  {/* Main Content Area */}
+                  <div className="flex-1 min-w-0 w-full">
+                    <p className="text-sm sm:text-base text-slate-900 font-medium truncate">
+                      {post.content.length > 60 ? `${post.content.substring(0, 60)}...` : post.content}
+                    </p>
+                    <div className="flex items-center gap-3 mt-1.5 sm:mt-1">
+                      <div className="flex items-center gap-1">
+                        {post.accounts?.slice(0, 3).map((acc) => (
+                          <PlatformIcon key={acc.id} platform={acc.platform} size="sm" />
+                        ))}
+                        {post.platforms?.length > 3 && (
+                          <span className="text-[10px] sm:text-xs text-slate-500 ml-1">
+                            +{post.platforms.length - 3}
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-[10px] sm:text-xs text-slate-400">
+                        {format(new Date(post.createdAt), 'MMM d, yyyy')}
+                      </span>
+                    </div>
+                  </div>
 
-        {/* Action Elements (Badge & Button) */}
-        <div className="flex items-center justify-between sm:justify-end w-full sm:w-auto gap-3">
-          <Badge variant={post.status === 'published' ? 'published' : 'draft'}>
-            {post.status}
-          </Badge>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="rounded-xl h-8 w-8 sm:h-9 sm:w-9 p-0 flex items-center justify-center shrink-0"
-            onClick={() => navigate(`/posts/${post.id}/edit`)}
-          >
-            <Pencil className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-          </Button>
-        </div>
-        
-      </div>
-    </div>
-  ))}
-</div>
+                  {/* Action Elements (Badge & Button) */}
+                  <div className="flex items-center justify-between sm:justify-end w-full sm:w-auto gap-3">
+                    <Badge variant={post.status === 'published' ? 'published' : 'draft'}>
+                      {post.status}
+                    </Badge>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="rounded-xl h-8 w-8 sm:h-9 sm:w-9 p-0 flex items-center justify-center shrink-0"
+                      onClick={() => navigate(`/posts/${post.id}/edit`)}
+                    >
+                      <Pencil className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                    </Button>
+                  </div>
+                  
+                </div>
+              </div>
+            ))}
+          </div>
         )}
       </motion.div>
     </PageWrapper>

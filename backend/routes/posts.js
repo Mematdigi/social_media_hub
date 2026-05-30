@@ -1,5 +1,8 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 const Post = require('../models/Post');
 const SocialAccount = require('../models/SocialAccount');
 const authMiddleware = require('../middleware/auth');
@@ -8,15 +11,86 @@ const { publishPostToPlatforms } = require('../services/publishService');
 const { encrypt, decrypt } = require('../utils/encryption');
 const axios = require('axios');
 
-
 const router = express.Router();
 
-// ─── Helper: format post for response ────────────────────────────────────────
+const sharp = require('sharp');
+
+
+// ════════════════════════════════════════════════════════════
+// Configure Multer for File Uploads
+// ════════════════════════════════════════════════════════════
+const uploadDir = path.join(__dirname, '../uploads');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, uploadDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const safeName = file.originalname.replace(/[^a-zA-Z0-9.]/g, '_');
+    cb(null, uniqueSuffix + '-' + safeName);
+  }
+});
+
+const upload = multer({
+  storage: storage,
+  limits: {     fileSize: 500 * 1024 * 1024  }, // 100MB
+  fileFilter: function (req, file, cb) {
+    const allowedMimes = [
+      // Images
+      'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+      // Videos
+      'video/mp4', 'video/quicktime', 'video/x-msvideo',
+      'video/x-matroska', 'video/webm', 'video/ogg'
+    ];
+    if (allowedMimes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type'), false);
+    }
+  }
+});
+
+// ════════════════════════════════════════════════════════════
+// POST /api/posts/upload - File Upload Endpoint
+// ════════════════════════════════════════════════════════════
+router.post('/upload', authMiddleware, upload.single('file'), (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ detail: 'No file uploaded' });
+    }
+
+    // ✅ CORRECT - hardcoded https
+    const fileUrl = `https://${req.get('host')}/uploads/${req.file.filename}`;
+    const isVideo = req.file.mimetype.startsWith('video');
+    const mediaType = isVideo ? 'VIDEO' : 'IMAGE';
+
+    res.json({
+      url: fileUrl,
+      filename: req.file.filename,
+      mediaType: mediaType,
+      mimetype: req.file.mimetype,
+      size: req.file.size
+    });
+  } catch (error) {
+    logger.error('Failed to upload file', error);
+    res.status(500).json({ detail: 'Failed to upload file' });
+  }
+});
+
+// ════════════════════════════════════════════════════════════
+// Helper Functions
+// ════════════════════════════════════════════════════════════
+
 const formatPost = (post, accounts = []) => ({
   id: post.id,
   userId: post.userId,
   content: post.content,
   mediaUrls: post.mediaUrls || [],
+  mediaFormats: post.mediaFormats || {},
   accountIds: post.accountIds || [],
   platforms: post.platforms || [],
   status: post.status,
@@ -29,7 +103,6 @@ const formatPost = (post, accounts = []) => ({
     status:         r.status,
     error:          r.error || null,
     publishedAt:    r.publishedAt ? new Date(r.publishedAt).toISOString() : null,
-    // Per-page breakdown (Facebook, LinkedIn pages, etc.)
     pages: (r.pages || []).map(p => ({
       pageId:   p.pageId,
       pageName: p.pageName,
@@ -43,16 +116,11 @@ const formatPost = (post, accounts = []) => ({
   accounts
 });
 
-// ─── Helper: fetch full account docs (with pages[]) for publishing ────────────
-// selectedPageIds: optional map { accountId → [pageId, ...] } to override isSelected
 const getAccountsForPublish = async (accountIds, selectedPageIds = {}) => {
   const accounts = [];
-
   for (const accId of accountIds) {
     const acc = await SocialAccount.findOne({ id: accId }).select('-_id -__v');
     if (!acc) continue;
-
-    // If caller specified which pages to post to, override isSelected
     if (selectedPageIds[accId] && acc.pages?.length) {
       const chosenIds = selectedPageIds[accId];
       acc.pages = acc.pages.map(p => ({
@@ -60,21 +128,17 @@ const getAccountsForPublish = async (accountIds, selectedPageIds = {}) => {
         isSelected: chosenIds.includes(p.pageId)
       }));
     }
-
     accounts.push(acc);
   }
-
   return accounts;
 };
 
-// ─── Helper: safe account summary (no tokens) for GET responses ───────────────
 const safeAccount = (acc) => ({
   id: acc.id,
   accountId: acc.accountId,
   accountName: acc.accountName,
   profilePicture: acc.profilePicture,
   platform: acc.platform,
-  // Include pages summary (no tokens)
   pages: (acc.pages || []).map(p => ({
     pageId:     p.pageId,
     pageName:   p.pageName,
@@ -83,45 +147,72 @@ const safeAccount = (acc) => ({
   }))
 });
 
-// ─── GET /api/posts ───────────────────────────────────────────────────────────
+const getPageTokenForPost = (account, platformPostId) => {
+  const pageId = platformPostId?.split('_')[0];
+  if (!pageId) return null;
+  const page = (account.pages || []).find(p => p.pageId === pageId);
+  if (!page?.pageAccessToken) return null;
+  return decrypt(page.pageAccessToken);
+};
+
+// ════════════════════════════════════════════════════════════
+// Check and Process Scheduled Posts
+// ════════════════════════════════════════════════════════════
+const processScheduledPosts = async () => {
+  try {
+    const now = new Date();
+    const scheduledPosts = await Post.find({
+      status: 'scheduled',
+      scheduledAt: { $lte: now }
+    });
+
+    for (const post of scheduledPosts) {
+      const accountsFull = await getAccountsForPublish(post.accountIds || []);
+      const result = await publishPostToPlatforms(post, accountsFull);
+
+      await Post.updateOne({ id: post.id }, {
+        status:          result.status,
+        platformResults: result.platformResults,
+        publishedAt:     new Date()
+      });
+    }
+  } catch (error) {
+    logger.error('Error processing scheduled posts', error);
+  }
+};
+
+// Run scheduled posts processor every minute
+setInterval(processScheduledPosts, 60000);
+
+// ════════════════════════════════════════════════════════════
+// GET /api/posts - Get All Posts
+// ════════════════════════════════════════════════════════════
 router.get('/', authMiddleware, async (req, res) => {
   try {
     const query = { userId: req.user.id };
     if (req.query.status) query.status = req.query.status;
 
-    // ── Step 1: DB posts ───────────────────────────────────────────────────
     const dbPosts = await Post.find(query).sort({ createdAt: -1 }).select('-_id -__v');
-
-    // ── Step 2: all connected accounts for this user ───────────────────────
-    const allAccounts = await SocialAccount.find({
-      userId:   req.user.id,
-      isActive: true,
-    });
-
+    const allAccounts = await SocialAccount.find({ userId: req.user.id, isActive: true });
     const fbAccounts = allAccounts.filter(a => a.platform === 'facebook');
-    const igAccounts = allAccounts.filter(a => a.platform === 'instagram'); // ← NEW
+    const igAccounts = allAccounts.filter(a => a.platform === 'instagram');
 
-    // ── Step 3a: fetch live posts from every Facebook page ─────────────────
     const fbPostMetaMap = {};
-
     for (const account of fbAccounts) {
       for (const page of account.pages || []) {
         if (!page.pageAccessToken) continue;
-
         try {
           const pageToken = decrypt(page.pageAccessToken);
-
           const fbRes = await axios.get(
             `https://graph.facebook.com/v19.0/${page.pageId}/feed`,
             {
               params: {
-                fields:       'id,message,story,created_time,full_picture,permalink_url,likes.summary(true),comments.summary(true)',
-                limit:        100,
+                fields: 'id,message,story,created_time,full_picture,permalink_url,likes.summary(true),comments.summary(true)',
+                limit: 100,
                 access_token: pageToken,
               },
             }
           );
-
           for (const fbPost of fbRes.data?.data || []) {
             fbPostMetaMap[fbPost.id] = {
               accountId:    account.id,
@@ -136,36 +227,29 @@ router.get('/', authMiddleware, async (req, res) => {
               comments:     fbPost.comments?.summary?.total_count || 0,
             };
           }
-
-          logger.info('🔄', `Fetched ${fbRes.data?.data?.length || 0} posts from FB page "${page.pageName}"`);
         } catch (err) {
-          logger.info(`FB page "${page.pageName}" fetch failed: ${err.response?.data?.error?.message || err.message}`);
+          logger.info(`FB page fetch failed: ${err.message}`);
         }
       }
     }
 
-    // ── Step 3b: fetch live posts from every Instagram account ────────────
     const igPostMetaMap = {};
-
     for (const account of igAccounts) {
-      const page = (account.pages || [])[0]; // IG always has one linked FB page
+      const page = (account.pages || [])[0];
       if (!page?.pageAccessToken) continue;
-
       try {
-        const pageToken   = decrypt(page.pageAccessToken);
-        const igAccountId = account.accountId; // IG Business account ID
-
+        const pageToken = decrypt(page.pageAccessToken);
+        const igAccountId = account.accountId;
         const igRes = await axios.get(
           `https://graph.facebook.com/v19.0/${igAccountId}/media`,
           {
             params: {
-              fields:       'id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count',
-              limit:        100,
+              fields: 'id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count',
+              limit: 100,
               access_token: pageToken,
             },
           }
         );
-
         for (const igPost of igRes.data?.data || []) {
           igPostMetaMap[igPost.id] = {
             accountId:    account.id,
@@ -174,23 +258,20 @@ router.get('/', authMiddleware, async (req, res) => {
             pageId:       page.pageId,
             pageName:     page.pageName,
             content:      igPost.caption    || '',
-            mediaType:    igPost.media_type || 'IMAGE',   // IMAGE | VIDEO | CAROUSEL_ALBUM
+            mediaType:    igPost.media_type || 'IMAGE',
             mediaUrls:    igPost.media_url  ? [igPost.media_url] : [],
-            thumbnailUrl: igPost.thumbnail_url || null,   // for VIDEO/REELS
+            thumbnailUrl: igPost.thumbnail_url || null,
             createdTime:  igPost.timestamp,
             permalinkUrl: igPost.permalink  || null,
             likes:        igPost.like_count     || 0,
             comments:     igPost.comments_count || 0,
           };
         }
-
-        logger.info('🔄', `Fetched ${igRes.data?.data?.length || 0} posts from IG @${account.igUsername}`);
       } catch (err) {
-        logger.info(`IG account "@${account.igUsername}" fetch failed: ${err.response?.data?.error?.message || err.message}`);
+        logger.info(`IG fetch failed: ${err.message}`);
       }
     }
 
-    // ── Step 4: build set of platformPostIds already in DB ────────────────
     const dbPlatformPostIds = new Set();
     for (const post of dbPosts) {
       for (const r of post.platformResults || []) {
@@ -198,39 +279,31 @@ router.get('/', authMiddleware, async (req, res) => {
       }
     }
 
-    // ── Step 5a: save new Facebook posts not yet in DB ────────────────────
     const newPosts = [];
-
     for (const [fbPostId, meta] of Object.entries(fbPostMetaMap)) {
       if (dbPlatformPostIds.has(fbPostId)) continue;
       if (!meta.content.trim()) continue;
 
-      const postId   = uuidv4();
+      const postId = uuidv4();
       const postTime = new Date(meta.createdTime);
 
       const newPost = new Post({
-        id:                 postId,
-        userId:             req.user.id,
-        content:            meta.content,
-        mediaUrls:          meta.mediaUrls,
-        accountIds:         [meta.accountId],
-        platforms:          ['facebook'],
-        status:             'published',
-        publishedAt:        postTime,
+        id: postId,
+        userId: req.user.id,
+        content: meta.content,
+        mediaUrls: meta.mediaUrls,
+        accountIds: [meta.accountId],
+        platforms: ['facebook'],
+        status: 'published',
+        publishedAt: postTime,
         syncedFromPlatform: true,
         platformResults: [{
-          platform:       'facebook',
-          accountId:      meta.accountId,
+          platform: 'facebook',
+          accountId: meta.accountId,
           platformPostId: fbPostId,
-          status:         'published',
-          publishedAt:    postTime,
-          pages: [{
-            pageId:   meta.pageId,
-            pageName: meta.pageName,
-            postId:   fbPostId,
-            status:   'published',
-            error:    null,
-          }],
+          status: 'published',
+          publishedAt: postTime,
+          pages: [{ pageId: meta.pageId, pageName: meta.pageName, postId: fbPostId, status: 'published', error: null }],
         }],
         createdAt: postTime,
         updatedAt: new Date(),
@@ -240,47 +313,34 @@ router.get('/', authMiddleware, async (req, res) => {
         await newPost.save();
         dbPlatformPostIds.add(fbPostId);
         newPosts.push(newPost);
-        logger.info('💾', `Auto-saved FB post ${fbPostId} from page "${meta.pageName}"`);
-      } catch (err) {
-        if (err.code !== 11000) {
-          logger.info(`Could not save FB post ${fbPostId}: ${err.message}`);
-        }
-      }
+      } catch (err) {}
     }
 
-    // ── Step 5b: save new Instagram posts not yet in DB ───────────────────
     for (const [igPostId, meta] of Object.entries(igPostMetaMap)) {
       if (dbPlatformPostIds.has(igPostId)) continue;
-      // Skip posts with no caption AND no media (completely empty)
       if (!meta.content.trim() && !meta.mediaUrls.length) continue;
 
-      const postId   = uuidv4();
+      const postId = uuidv4();
       const postTime = new Date(meta.createdTime);
 
       const newIGPost = new Post({
-        id:                 postId,
-        userId:             req.user.id,
-        content:            meta.content,
-        mediaUrls:          meta.mediaUrls,
-        mediaType:          meta.mediaType,      // IMAGE | VIDEO | CAROUSEL_ALBUM
-        accountIds:         [meta.accountId],
-        platforms:          ['instagram'],
-        status:             'published',
-        publishedAt:        postTime,
+        id: postId,
+        userId: req.user.id,
+        content: meta.content,
+        mediaUrls: meta.mediaUrls,
+        mediaType: meta.mediaType,
+        accountIds: [meta.accountId],
+        platforms: ['instagram'],
+        status: 'published',
+        publishedAt: postTime,
         syncedFromPlatform: true,
         platformResults: [{
-          platform:       'instagram',
-          accountId:      meta.accountId,
+          platform: 'instagram',
+          accountId: meta.accountId,
           platformPostId: igPostId,
-          status:         'published',
-          publishedAt:    postTime,
-          pages: [{
-            pageId:   meta.pageId,
-            pageName: meta.pageName,
-            postId:   igPostId,
-            status:   'published',
-            error:    null,
-          }],
+          status: 'published',
+          publishedAt: postTime,
+          pages: [{ pageId: meta.pageId, pageName: meta.pageName, postId: igPostId, status: 'published', error: null }],
         }],
         createdAt: postTime,
         updatedAt: new Date(),
@@ -289,33 +349,23 @@ router.get('/', authMiddleware, async (req, res) => {
       try {
         await newIGPost.save();
         dbPlatformPostIds.add(igPostId);
-        logger.info('💾', `Auto-saved IG post ${igPostId} from @${meta.igUsername}`);
-      } catch (err) {
-        if (err.code !== 11000) {
-          logger.warn(`Could not save IG post ${igPostId}: ${err.message}`);
-        }
-      }
+      } catch (err) {}
     }
 
-    // ── Step 6: reload all posts from DB ──────────────────────────────────
     const allPosts = await Post.find(query).sort({ createdAt: -1 }).select('-_id -__v');
-
-    // ── Step 7: build final response — enrich with live FB + IG metadata ──
     const result = [];
 
     for (const post of allPosts) {
-      // Resolve account summaries
       const accounts = [];
       for (const accId of post.accountIds || []) {
         const acc = await SocialAccount.findOne({ id: accId });
         if (acc) accounts.push(safeAccount(acc));
       }
 
-      // Enrich platformResults — picks FB or IG meta based on which map has the ID
       const enrichedResults = (post.platformResults || []).map(r => {
         const fbMeta = r.platformPostId ? (fbPostMetaMap[r.platformPostId] || null) : null;
         const igMeta = r.platformPostId ? (igPostMetaMap[r.platformPostId] || null) : null;
-        const meta   = fbMeta || igMeta; // one will always be null
+        const meta = fbMeta || igMeta;
 
         return {
           platform:       r.platform,
@@ -324,13 +374,11 @@ router.get('/', authMiddleware, async (req, res) => {
           status:         r.status,
           error:          r.error          || null,
           publishedAt:    r.publishedAt ? new Date(r.publishedAt).toISOString() : null,
-          // Shared live data
           pageName:       meta?.pageName     || null,
           pageId:         meta?.pageId       || null,
           permalinkUrl:   meta?.permalinkUrl || null,
           likes:          meta?.likes        ?? null,
           comments:       meta?.comments     ?? null,
-          // Instagram-only fields (null for Facebook posts)
           mediaType:      igMeta?.mediaType    || null,
           thumbnailUrl:   igMeta?.thumbnailUrl || null,
           igUsername:     igMeta?.igUsername   || null,
@@ -357,7 +405,9 @@ router.get('/', authMiddleware, async (req, res) => {
   }
 });
 
-// ─── GET /api/posts/:postId ───────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════
+// GET /api/posts/:postId
+// ════════════════════════════════════════════════════════════
 router.get('/:postId', authMiddleware, async (req, res) => {
   try {
     const post = await Post.findOne({ id: req.params.postId, userId: req.user.id })
@@ -378,16 +428,20 @@ router.get('/:postId', authMiddleware, async (req, res) => {
   }
 });
 
-                                //  If omitted, posts to all isSelected pages.
+// ════════════════════════════════════════════════════════════
+// POST /api/posts - Create Post with Scheduling
+// ════════════════════════════════════════════════════════════
 router.post('/', authMiddleware, async (req, res) => {
   try {
     const {
       content,
+      youtubeTitle, // 🆕 Extract YouTube Title from the request
       accountIds,
       mediaUrls = [],
+      mediaFormats = {}, 
       status = 'draft',
       scheduledAt,
-      selectedPages = {}   // { accountId: [pageId, ...] }
+      selectedPages = {}
     } = req.body;
 
     if (!content || !content.trim()) {
@@ -397,7 +451,6 @@ router.post('/', authMiddleware, async (req, res) => {
       return res.status(400).json({ detail: 'At least one account must be selected' });
     }
 
-    // Resolve platforms list
     const platforms = [];
     for (const accId of accountIds) {
       const acc = await SocialAccount.findOne({ id: accId }).select('platform');
@@ -419,7 +472,9 @@ router.post('/', authMiddleware, async (req, res) => {
       id: postId,
       userId: req.user.id,
       content,
+      youtubeTitle, // 🆕 Save the YouTube title to the database
       mediaUrls,
+      mediaFormats, 
       accountIds,
       platforms,
       status: postStatus,
@@ -431,9 +486,9 @@ router.post('/', authMiddleware, async (req, res) => {
 
     await post.save();
 
-    // Publish immediately if needed
     if (postStatus === 'publishing') {
       const accountsFull = await getAccountsForPublish(accountIds, selectedPages);
+      // publishPostToPlatforms will now have access to post.youtubeTitle!
       const result = await publishPostToPlatforms(post, accountsFull);
 
       post.status = result.status;
@@ -447,7 +502,6 @@ router.post('/', authMiddleware, async (req, res) => {
       });
     }
 
-    logger.info('📝', `New post created by ${req.user.name} — Status: ${post.status}`);
     res.status(201).json(formatPost(post, []));
   } catch (error) {
     logger.error('Failed to create post', error);
@@ -455,68 +509,63 @@ router.post('/', authMiddleware, async (req, res) => {
   }
 });
 
-
-// ─── DELETE /api/posts/:postId ────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════
+// DELETE /api/posts/:postId
+// ════════════════════════════════════════════════════════════
 router.delete('/:postId', authMiddleware, async (req, res) => {
   try {
     const post = await Post.findOne({ id: req.params.postId, userId: req.user.id });
     if (!post) return res.status(404).json({ detail: 'Post not found' });
 
     const deleteFromPlatform = req.query.deleteFromPlatform !== 'false';
-    const platformErrors     = [];
+    const platformErrors = [];
 
     if (deleteFromPlatform && post.status === 'published') {
       for (const result of post.platformResults || []) {
         if (result.status !== 'published' || !result.platformPostId) continue;
+        
         try {
           const account = await SocialAccount.findOne({ id: result.accountId });
-          if (!account) continue;  
-          // ── Facebook delete ──────────────────────────────────────────────
+          if (!account) continue;
+
+          // ✅ FACEBOOK: API Deletion is supported
           if (result.platform === 'facebook') {
             const pageToken = getPageTokenForPost(account, result.platformPostId);
-            if (!pageToken) {
-              platformErrors.push({ platform: 'facebook', error: 'Page token not found' });
-              continue;
-            }
-
-            await axios.delete(
-              `https://graph.facebook.com/v19.0/${result.platformPostId}`,
-              { params: { access_token: pageToken } }
-            );
-            logger.info('📘', `Deleted FB post ${result.platformPostId}`);
+            if (!pageToken) continue;
+            await axios.delete(`https://graph.facebook.com/v19.0/${result.platformPostId}`, { 
+              params: { access_token: pageToken } 
+            });
           }
 
-          // ── Instagram delete ─────────────────────────────────────────────
-          // IG Graph API: DELETE /{ig-media-id} using page access token
+          // ❌ INSTAGRAM: Pass the Meta Business Suite link to the frontend
           if (result.platform === 'instagram') {
-            const page = (account.pages || [])[0];
-            if (!page?.pageAccessToken) {
-              platformErrors.push({ platform: 'instagram', error: 'Page token not found' });
-              continue;
-            }
+            
+            // NOTE: Replace these with how you store the business/page IDs in your DB
+            const businessId = account.businessId || '2488876801380718'; 
+            const assetId = account.pageId || '364011614307982';
+            
+            const metaBusinessLink = `https://business.facebook.com/latest/posts/published_posts/?business_id=${businessId}&asset_id=${assetId}`;
 
-            const pageToken = decrypt(page.pageAccessToken);
-
-            await axios.delete(
-              `https://graph.facebook.com/v19.0/${result.platformPostId}`,
-              { params: { access_token: pageToken } }
-            );
-            logger.info('📷', `Deleted IG post ${result.platformPostId}`);
+            platformErrors.push({ 
+              platform: 'instagram', 
+              error: 'Meta does not allow apps to delete Instagram posts automatically.',
+              actionRequired: 'manual_delete',
+              actionLink: metaBusinessLink // Passing the link to the frontend!
+            });
+            continue; 
           }
-
+          
         } catch (err) {
-          const errMsg = err.response?.data?.error?.message || err.message;
-          logger.info(`Could not delete from ${result.platform}: ${errMsg}`);
-          platformErrors.push({ platform: result.platform, error: errMsg });
+          platformErrors.push({ platform: result.platform, error: err.message });
         }
       }
     }
 
+    // Always delete from your local database
     await Post.deleteOne({ id: req.params.postId, userId: req.user.id });
-    logger.info('📝', `Post ${req.params.postId} deleted`);
-
+    
     res.json({
-      message:        'Post deleted successfully',
+      message: 'Post deleted from your dashboard.',
       platformErrors: platformErrors.length > 0 ? platformErrors : undefined,
     });
   } catch (error) {
@@ -525,28 +574,24 @@ router.delete('/:postId', authMiddleware, async (req, res) => {
   }
 });
 
-
-// ─── PUT /api/posts/:postId ───────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════
+// PUT /api/posts/:postId - Update Post
+// ════════════════════════════════════════════════════════════
 router.put('/:postId', authMiddleware, async (req, res) => {
   try {
     const post = await Post.findOne({ id: req.params.postId, userId: req.user.id });
     if (!post) return res.status(404).json({ detail: 'Post not found' });
 
     const {
-      content,
-      accountIds,
-      mediaUrls,
-      mediaType,                // ← NEW: 'IMAGE' | 'REELS' | 'CAROUSEL'
-      status,
-      scheduledAt,
-      syncToPlatform = true
+      content, accountIds, mediaUrls, mediaFormats, mediaType, status, scheduledAt, syncToPlatform = true
     } = req.body;
 
     const updateData = { updatedAt: new Date() };
 
-    if (content   !== undefined) updateData.content   = content;
+    if (content !== undefined) updateData.content = content;
     if (mediaUrls !== undefined) updateData.mediaUrls = mediaUrls;
-    if (mediaType !== undefined) updateData.mediaType = mediaType; // ← NEW
+    if (mediaFormats !== undefined) updateData.mediaFormats = mediaFormats;
+    if (mediaType !== undefined) updateData.mediaType = mediaType;
 
     if (accountIds !== undefined) {
       updateData.accountIds = accountIds;
@@ -560,137 +605,66 @@ router.put('/:postId', authMiddleware, async (req, res) => {
 
     if (scheduledAt !== undefined) {
       updateData.scheduledAt = scheduledAt ? new Date(scheduledAt) : null;
-      if (scheduledAt && new Date(scheduledAt) > new Date()) updateData.status = 'scheduled';
+      if (scheduledAt && new Date(scheduledAt) > new Date()) {
+        updateData.status = 'scheduled';
+      }
     }
 
     if (status !== undefined) updateData.status = status;
 
-    // ── Sync content edits to live platforms ──────────────────────────────
-    if (
-      content !== undefined &&
-      content !== post.content &&
-      post.status === 'published'
-    ) {
+    if (content !== undefined && content !== post.content && post.status === 'published') {
       for (const result of post.platformResults || []) {
         if (result.status !== 'published' || !result.platformPostId) continue;
-
         try {
           const account = await SocialAccount.findOne({ accountId: result.accountId });
           if (!account) continue;
 
-          // ── Facebook: update caption via POST /{post-id} ───────────────
           if (result.platform === 'facebook') {
             const pageToken = getPageTokenForPost(account, result.platformPostId);
-            if (!pageToken) {
-              continue;
-            }
-
-            await axios.post(
-              `https://graph.facebook.com/v19.0/${result.platformPostId}`,
-              { message: content, access_token: pageToken }
-            );
-            logger.info('📘', `Updated FB post ${result.platformPostId}`);
+            if (!pageToken) continue;
+            await axios.post(`https://graph.facebook.com/v19.0/${result.platformPostId}`, { message: content, access_token: pageToken });
           }
 
-          // ── Instagram: update caption via POST /{ig-media-id} ──────────
-          // IG Graph API only supports caption edits on published media
-          // Media itself (image/video) cannot be replaced — caption only
-       // ── Instagram: update caption via POST /{ig-media-id} ──────────
-// ── Instagram: update caption ────────────────────────────────────
-console.log('📷', `Attempting to update IG caption for post ${result.platform}`);
-if (result.platform === 'instagram') {
-  const page = (account.pages || [])[0];
-  if (!page?.pageAccessToken) continue;
-  const pageToken = decrypt(page.pageAccessToken);
-
-  // ── BEFORE ───────────────────────────────────────────────────
-  const beforeRes = await axios.get(
-    `https://graph.facebook.com/v19.0/${result.platformPostId}`,
-    { params: { fields: 'id,caption', access_token: pageToken } }
-  );
-  logger.info('📷', `BEFORE: "${beforeRes.data.caption}"`);
-  logger.info('📷', `SENDING: "${content}"`);
-  logger.info('📷', `ARE THEY SAME?: ${beforeRes.data.caption === content}`);
-
-  // ── UPDATE ───────────────────────────────────────────────────
-  const updateRes = await axios.post(
-    `https://graph.facebook.com/v19.0/${result.platformPostId}`,
-    null,
-    {
-      params: {
-        caption:         content,
-        comment_enabled: true,
-        access_token:    pageToken
-      }
-    }
-  );
-  logger.info('📷', `UPDATE RESPONSE: ${JSON.stringify(updateRes.data)}`);
-
-  // ── AFTER — wait 3s ──────────────────────────────────────────
-  await new Promise(r => setTimeout(r, 3000));
-
-  const afterRes = await axios.get(
-    `https://graph.facebook.com/v19.0/${result.platformPostId}`,
-    { params: { fields: 'id,caption', access_token: pageToken } }
-  );
-  logger.info('📷', `AFTER:  "${afterRes.data.caption}"`);
-
-  // ── KEY CHECK ────────────────────────────────────────────────
-  logger.info('📷', `PLATFORM POST ID IN DB:   ${result.platformPostId}`);
-  logger.info('📷', `PLATFORM POST ID IN API:  ${afterRes.data.id}`);
-  logger.info('📷', `IDs MATCH?: ${result.platformPostId === afterRes.data.id}`);
-
-  if (afterRes.data.caption === content) {
-    logger.info('📷', `✅ CONFIRMED — caption updated on Instagram`);
-  } else {
-    logger.info(`⚠️ NOT UPDATED — caption unchanged after API call`);
-  }
-}
-        } catch (err) {
-          const errMsg = err.response?.data?.error?.message || err.message;
-          // Non-fatal — DB is still updated below
-        }
+          if (result.platform === 'instagram') {
+            const page = (account.pages || [])[0];
+            if (!page?.pageAccessToken) continue;
+            const pageToken = decrypt(page.pageAccessToken);
+            await axios.post(`https://graph.facebook.com/v19.0/${result.platformPostId}`, null, {
+              params: { caption: content, comment_enabled: true, access_token: pageToken }
+            });
+          }
+        } catch (err) {}
       }
     }
 
-    // await Post.updateOne({ id: req.params.postId }, updateData);
+    await Post.updateOne({ id: req.params.postId }, updateData);
     const updatedPost = await Post.findOne({ id: req.params.postId }).select('-_id -__v');
 
     const accounts = [];
     for (const accId of updatedPost.accountIds || []) {
-      const acc = await SocialAccount.findOne({ id: accId })
-        .select('-accessToken -refreshToken -_id -__v');
+      const acc = await SocialAccount.findOne({ id: accId }).select('-accessToken -refreshToken -_id -__v');
       if (acc) accounts.push(safeAccount(acc));
     }
 
-    logger.info('📝', `Post ${req.params.postId} updated`);
-
-    // Verify caption was actually updated
-
-
-    
     res.json(formatPost(updatedPost, accounts));
-
   } catch (error) {
     logger.error('Failed to update post', error);
     res.status(500).json({ detail: 'Failed to update post' });
   }
 });
 
-// ─── POST /api/posts/:postId/publish ─────────────────────────────────────────
-// Body (optional):
-//   selectedPages object — { "<accountId>": ["<pageId>", ...] }
+// ════════════════════════════════════════════════════════════
+// POST /api/posts/:postId/publish
+// ════════════════════════════════════════════════════════════
 router.post('/:postId/publish', authMiddleware, async (req, res) => {
   try {
     const post = await Post.findOne({ id: req.params.postId, userId: req.user.id });
     if (!post) return res.status(404).json({ detail: 'Post not found' });
 
     const { selectedPages = {} } = req.body;
-
     const accountsFull = await getAccountsForPublish(post.accountIds || [], selectedPages);
 
     await Post.updateOne({ id: req.params.postId }, { status: 'publishing' });
-
     const result = await publishPostToPlatforms(post, accountsFull);
 
     await Post.updateOne({ id: req.params.postId }, {
@@ -699,28 +673,183 @@ router.post('/:postId/publish', authMiddleware, async (req, res) => {
       publishedAt:     new Date()
     });
 
-    logger.info(`✅ Post ${req.params.postId} published — status: ${result.status}`);
     res.json({
-      message:         'Post published',
-      status:          result.status,
+      message: 'Post published',
+      status: result.status,
       platformResults: result.platformResults
     });
   } catch (error) {
-    logger.error('Failed to publish post', error);
     res.status(500).json({ detail: 'Failed to publish post' });
   }
 });
 
-// ─── Helper: get page token for a specific platformPostId ─────────────────────
-// platformPostId format: "pageId_postId" — extract pageId to find the right page
-const getPageTokenForPost = (account, platformPostId) => {
-  // Extract pageId from "364011614307982_1333703848777352"
-  const pageId = platformPostId?.split('_')[0];
-  if (!pageId) return null;
+// ════════════════════════════════════════════════════════════════
+// POST /upload-chunk - Chunked upload for large files
+// ════════════════════════════════════════════════════════════════
 
-  const page = (account.pages || []).find(p => p.pageId === pageId);
-  if (!page?.pageAccessToken) return null;
+const chunkUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 500 * 1024 * 1024 }
+});
 
-  return decrypt(page.pageAccessToken);
-};
+router.post('/upload-chunk', authMiddleware, chunkUpload.single('file'), async (req, res) => {
+
+  try {
+    const { chunkIndex, totalChunks, uploadId, fileId, originalName, mimeType } = req.body;
+    
+    // Accept either uploadId or fileId
+    const fileIdentifier = fileId || uploadId;
+
+    if (!req.file) {
+      return res.status(400).json({ 
+        success: false,
+        detail: 'No chunk uploaded' 
+      });
+    }
+
+    if (!fileIdentifier || chunkIndex === undefined || totalChunks === undefined) {
+      return res.status(400).json({ 
+        success: false,
+        detail: 'Missing fileId/uploadId, chunkIndex, or totalChunks' 
+      });
+    }
+
+    const chunksDir = path.join(__dirname, '../uploads/chunks');
+    const sessionDir = path.join(chunksDir, fileIdentifier);
+
+    // Create folder if needed
+    if (!fs.existsSync(sessionDir)) {
+      fs.mkdirSync(sessionDir, { recursive: true });
+    }
+
+    // Save chunk
+    const chunkPath = path.join(sessionDir, `chunk_${chunkIndex}`);
+    fs.writeFileSync(chunkPath, req.file.buffer);
+
+    logger.info(`[CHUNK] Saved chunk ${chunkIndex}/${totalChunks} for file ${fileIdentifier}`);
+
+    // Check if all chunks are uploaded
+    const uploadedChunks = fs.readdirSync(sessionDir).filter(f => f.startsWith('chunk_'));
+    const allChunksUploaded = uploadedChunks.length === parseInt(totalChunks);
+
+    if (!allChunksUploaded) {
+      return res.status(200).json({
+        success: true,
+        message: `Chunk ${chunkIndex} uploaded`,
+        progress: Math.round((uploadedChunks.length / totalChunks) * 100)
+      });
+    }
+
+    // ✅ ALL CHUNKS RECEIVED - Assemble and process
+    logger.info(`[CHUNK] All chunks received for ${fileIdentifier}, assembling...`);
+
+    // Sort and concatenate chunks
+    const sortedChunks = uploadedChunks
+      .sort((a, b) => {
+        const aNum = parseInt(a.split('_')[1]);
+        const bNum = parseInt(b.split('_')[1]);
+        return aNum - bNum;
+      })
+      .map(f => fs.readFileSync(path.join(sessionDir, f)));
+
+    const fileBuffer = Buffer.concat(sortedChunks);
+    const isVideo = mimeType?.startsWith('video');
+    const timestamp = Date.now();
+    const cleanName = path.parse(originalName).name;
+
+    if (isVideo) {
+      // VIDEO: Save as-is
+      const filename = `${timestamp}-${cleanName}.mp4`;
+      const filepath = path.join(__dirname, '../uploads', filename);
+
+      fs.writeFileSync(filepath, fileBuffer);
+
+      const fileUrl = `https://${req.get('host')}/uploads/${filename}`;
+      const stats = fs.statSync(filepath);
+
+      // Clean up chunks
+      fs.rmSync(sessionDir, { recursive: true });
+
+      logger.info(`[UPLOAD] Video assembled: ${filename} (${stats.size} bytes)`);
+
+      return res.status(200).json({
+        success: true,
+        url: fileUrl,
+        filename: filename,
+        mediaType: 'VIDEO',
+        mimetype: 'video/mp4',
+        size: stats.size
+      });
+    } else {
+      // IMAGE: Convert to baseline JPEG
+      const filename = `${timestamp}-${cleanName}.jpg`;
+      const filepath = path.join(__dirname, '../uploads', filename);
+
+      try {
+        await sharp(fileBuffer)
+          .rotate()
+          .resize(1080, 1080, { fit: 'inside', withoutEnlargement: true })
+          .jpeg({
+            quality: 85,
+            progressive: false,
+            mozjpeg: true,
+            density: 72
+          })
+          .toFile(filepath);
+
+        const stats = fs.statSync(filepath);
+        const fileUrl = `https://${req.get('host')}/uploads/${filename}`;
+
+        // Clean up chunks
+        fs.rmSync(sessionDir, { recursive: true });
+
+        logger.info(`[UPLOAD] Image assembled: ${filename} (${stats.size} bytes)`);
+
+        return res.status(200).json({
+          success: true,
+          url: fileUrl,
+          filename: filename,
+          mediaType: 'IMAGE',
+          mimetype: 'image/jpeg',
+          size: stats.size
+        });
+      } catch (sharpError) {
+        logger.error(`[UPLOAD] Sharp error: ${sharpError.message}`);
+        fs.rmSync(sessionDir, { recursive: true });
+        return res.status(500).json({
+          success: false,
+          detail: `Image processing failed: ${sharpError.message}`
+        });
+      }
+    }
+  } catch (error) {
+    logger.error(`[CHUNK] Error: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      detail: error.message || 'Failed to upload chunk'
+    });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════
+// DELETE /upload-chunk/:fileId - Cancel chunked upload
+// ════════════════════════════════════════════════════════════════
+router.delete('/upload-chunk/:fileId', authMiddleware, (req, res) => {
+  try {
+    const fileId = req.params.fileId;
+    const chunksDir = path.join(__dirname, '../uploads/chunks');
+    const sessionDir = path.join(chunksDir, fileId);
+
+    if (fs.existsSync(sessionDir)) {
+      fs.rmSync(sessionDir, { recursive: true });
+      logger.info(`[CHUNK] Cancelled upload: ${fileId}`);
+    }
+
+    res.status(200).json({ success: true, message: 'Upload cancelled' });
+  } catch (error) {
+    logger.error(`[CHUNK] Cancel error: ${error.message}`);
+    res.status(500).json({ success: false, detail: error.message });
+  }
+});
+
 module.exports = router;

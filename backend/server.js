@@ -221,7 +221,7 @@ const publishToPlatform = async (platform, content) => {
 // });
 
 // Connect to MongoDB and start server
-const MONGO_URL = process.env.MONGO_URL || 'mongodb://localhost:27017';
+const MONGO_URL = process.env.MONGO_URI || 'mongodb://localhost:27017';
 const DB_NAME = process.env.DB_NAME || 'SM_Tool';
 
 mongoose.connect(`${MONGO_URL}/${DB_NAME}`)

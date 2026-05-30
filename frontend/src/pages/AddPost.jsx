@@ -15,11 +15,38 @@ export default function AddPost() {
 
   const handleSubmit = async (formData) => {
     setLoading(true);
+    
+    // 1. Detect if this is a heavy video/YouTube upload
+    let isVideoUpload = false;
+    
+    // Check if formData is a native FormData object (used for file uploads)
+    if (formData instanceof FormData) {
+      // Assuming your PostForm appends files to a 'media' or 'files' key
+      const files = formData.getAll('media').length ? formData.getAll('media') : formData.getAll('files');
+      isVideoUpload = files.some(file => file.type && file.type.startsWith('video/'));
+      
+      // Also check if YouTube is explicitly selected
+      const platforms = formData.getAll('platforms');
+      if (platforms.includes('youtube')) isVideoUpload = true;
+    }
+
+    // 2. Show a persistent loading toast for long uploads
+    if (isVideoUpload) {
+      toast.loading('Uploading video... This may take a few moments depending on file size.', { 
+        id: 'upload-toast' // Give it an ID so we can dismiss it later
+      });
+    }
+
     try {
+      // 3. Send to backend
       await createPost(formData);
-      toast.success('Post created successfully!');
+      
+      if (isVideoUpload) toast.dismiss('upload-toast');
+      toast.success('Post published successfully!');
       navigate('/posts');
+      
     } catch (error) {
+      if (isVideoUpload) toast.dismiss('upload-toast');
       toast.error(error.response?.data?.detail || 'Failed to create post');
     } finally {
       setLoading(false);
@@ -52,7 +79,7 @@ export default function AddPost() {
                 Create New Post
               </h1>
               <p className="text-slate-600">
-                Compose and share content across your accounts
+                Compose and share content, images, and YouTube videos
               </p>
             </div>
           </div>

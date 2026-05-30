@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_URL = process.env.API_URL || 'http://localhost:5000';
+const API_URL = process.env.REACT_APP_BACKEND_URL || 'https://media.mematdigi.com';
 
 const api = axios.create({
   baseURL: `${API_URL}/api`,
@@ -42,6 +42,57 @@ export const accountsAPI = {
   getAll:       ()          => api.get('/accounts'),
   getPlatforms: ()          => api.get('/accounts/platforms'),
   disconnect:   (accountId) => api.delete(`/accounts/${accountId}`),
+
+  // ✅ ADDED: uploadMedia for PostForm file uploads
+  // Handles large videos with chunked upload + progress
+  uploadMedia: async (formData, onProgress) => {
+    const file = formData.get('file');
+    const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB per chunk
+
+    // Small files (under 5MB) — upload directly
+    if (!file || file.size <= CHUNK_SIZE) {
+      return api.post('/posts/upload', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        onUploadProgress: (e) => {
+          if (onProgress) onProgress(Math.round((e.loaded * 100) / e.total));
+        },
+      });
+    }
+
+    // Large files — upload in chunks
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+    const uploadId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, file.size);
+      const chunk = file.slice(start, end);
+
+      const chunkForm = new FormData();
+      chunkForm.append('file', chunk, file.name);
+      chunkForm.append('uploadId', uploadId);
+      chunkForm.append('chunkIndex', i);
+      chunkForm.append('totalChunks', totalChunks);
+      chunkForm.append('originalName', file.name);
+      chunkForm.append('mimeType', file.type);
+
+      const response = await api.post('/posts/upload-chunk', chunkForm, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        onUploadProgress: (e) => {
+          if (onProgress) {
+            const chunkProgress = e.loaded / e.total;
+            const overall = Math.round(((i + chunkProgress) / totalChunks) * 100);
+            onProgress(overall);
+          }
+        },
+      });
+
+      // Last chunk returns the final URL
+      if (i === totalChunks - 1) {
+        return response;
+      }
+    }
+  },
 
 initiateOAuth: async (platform) => {
   const token = localStorage.getItem('socialhub_token');
