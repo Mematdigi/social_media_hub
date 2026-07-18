@@ -171,6 +171,12 @@ export default function Login() {
               Sign up
             </Link>
           </p>
+     <div style={{ textAlign: 'center', padding: '20px', fontFamily: 'sans-serif' }}>
+      {/* <Link to='/privacy-policy'>Privacy Policy</Link> */}
+            <a href="/privacy-policy" rel="noopener noreferrer">Privacy Policy</a> 
+            {' | '}
+            <a href="/terms-condition" rel="noopener noreferrer">Terms & Conditions</a>
+          </div>
         </motion.div>
       </div>
     </div>

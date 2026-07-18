@@ -10,45 +10,64 @@ const logger = require('../utils/logger');
 const { publishPostToPlatforms } = require('../services/publishService');
 const { encrypt, decrypt } = require('../utils/encryption');
 const axios = require('axios');
+const sharp = require('sharp');
 
 const router = express.Router();
 
-const sharp = require('sharp');
-
-
-// ════════════════════════════════════════════════════════════
-// Configure Multer for File Uploads
-// ════════════════════════════════════════════════════════════
 const uploadDir = path.join(__dirname, '../uploads');
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
+// ─── Function to generate a safe and short filename ───
+function getSafeShortFilename(originalname) {
+  // 1. Extract the file extension (e.g., .mp4)
+  const ext = path.extname(originalname);
+  
+  // 2. Extract the base filename without the extension
+  let baseName = path.basename(originalname, ext);
+
+  // 3. Allow only safe characters (English, Hindi, and Numbers)
+  baseName = baseName.replace(/[^a-zA-Z0-9\u0900-\u097F]/g, '_');
+
+  // 4. CRITICAL: Strictly limit the base name to 20 characters
+  // This prevents exceeding the Linux 255-byte filename limit
+  if (baseName.length > 20) {
+    baseName = baseName.substring(0, 20);
+  }
+
+  // 5. Add a unique timestamp to prevent duplicate filenames
+  const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+  console.log("name unuquwe",`${uniqueSuffix}-${baseName}${ext}`)
+
+  return `${uniqueSuffix}-${baseName}${ext}`;
+}
+
+// ─── Multer Storage Config ───
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     cb(null, uploadDir);
   },
   filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const safeName = file.originalname.replace(/[^a-zA-Z0-9.]/g, '_');
-    cb(null, uniqueSuffix + '-' + safeName);
+    // Using our new safe filename function here
+    const finalSafeName = getSafeShortFilename(file.originalname);
+    cb(null, finalSafeName);
   }
 });
 
 const upload = multer({
   storage: storage,
-  limits: {     fileSize: 500 * 1024 * 1024  }, // 100MB
+  limits: { fileSize: 500 * 1024 * 1024 }, // 500MB limit
   fileFilter: function (req, file, cb) {
     const allowedMimes = [
-      // Images
       'image/jpeg', 'image/png', 'image/gif', 'image/webp',
-      // Videos
       'video/mp4', 'video/quicktime', 'video/x-msvideo',
       'video/x-matroska', 'video/webm', 'video/ogg'
     ];
     if (allowedMimes.includes(file.mimetype)) {
       cb(null, true);
     } else {
+      // Throw an error if the file type is invalid
       cb(new Error('Invalid file type'), false);
     }
   }
@@ -57,34 +76,52 @@ const upload = multer({
 // ════════════════════════════════════════════════════════════
 // POST /api/posts/upload - File Upload Endpoint
 // ════════════════════════════════════════════════════════════
-router.post('/upload', authMiddleware, upload.single('file'), (req, res) => {
-  try {
+router.post('/upload', authMiddleware, (req, res) => {
+  // Define the upload handler (ensure your frontend sends the field name as 'file')
+  const uploadHandler = upload.single('file');
+
+  // Execute the handler manually inside the route
+  uploadHandler(req, res, function (err) {
+    // 1. Catch Multer-specific errors (e.g., File too large)
+    if (err instanceof multer.MulterError) {
+      logger.error('Multer upload error:', err);
+      return res.status(400).json({ detail: `Upload Error: ${err.message}` });
+    } 
+    // 2. Catch custom errors from our fileFilter (e.g., Invalid file type)
+    else if (err) {
+      logger.error('File filter error:', err);
+      return res.status(400).json({ detail: err.message });
+    }
+
+    // 3. Catch empty files
     if (!req.file) {
       return res.status(400).json({ detail: 'No file uploaded' });
     }
 
-    // ✅ CORRECT - hardcoded https
-    const fileUrl = `https://${req.get('host')}/uploads/${req.file.filename}`;
-    const isVideo = req.file.mimetype.startsWith('video');
-    const mediaType = isVideo ? 'VIDEO' : 'IMAGE';
+    // 4. If we reach here, the file was safely saved to disk
+    try {
+      // Using req.protocol makes this work dynamically for both local (http) and production (https)
+      const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
+      const isVideo = req.file.mimetype.startsWith('video');
+      const mediaType = isVideo ? 'VIDEO' : 'IMAGE';
 
-    res.json({
-      url: fileUrl,
-      filename: req.file.filename,
-      mediaType: mediaType,
-      mimetype: req.file.mimetype,
-      size: req.file.size
-    });
-  } catch (error) {
-    logger.error('Failed to upload file', error);
-    res.status(500).json({ detail: 'Failed to upload file' });
-  }
+      res.json({
+        url: fileUrl,
+        filename: req.file.filename,
+        mediaType: mediaType,
+        mimetype: req.file.mimetype,
+        size: req.file.size
+      });
+    } catch (error) {
+      logger.error('Failed to construct file response', error);
+      res.status(500).json({ detail: 'Failed to process file metadata' });
+    }
+  });
 });
 
 // ════════════════════════════════════════════════════════════
 // Helper Functions
 // ════════════════════════════════════════════════════════════
-
 const formatPost = (post, accounts = []) => ({
   id: post.id,
   userId: post.userId,
@@ -111,9 +148,15 @@ const formatPost = (post, accounts = []) => ({
       error:    p.error || null
     }))
   })),
-  createdAt: post.createdAt.toISOString(),
-  updatedAt: post.updatedAt.toISOString(),
-  accounts
+  createdAt: post.createdAt?.toISOString ? post.createdAt.toISOString() : post.createdAt,
+  updatedAt: post.updatedAt?.toISOString ? post.updatedAt.toISOString() : post.updatedAt,
+  accounts,
+  youtubeTitle:       post.youtubeTitle || '',
+  youtubeTags:        Array.isArray(post.youtubeTags) ? post.youtubeTags : [],
+  youtubeCategory:    post.youtubeCategory || '22',
+  youtubePrivacy:     post.youtubePrivacy || 'public',
+  youtubeMadeForKids: post.youtubeMadeForKids || false,
+  youtubeThumbnail:   post.youtubeThumbnail || null
 });
 
 const getAccountsForPublish = async (accountIds, selectedPageIds = {}) => {
@@ -181,22 +224,30 @@ const processScheduledPosts = async () => {
   }
 };
 
-// Run scheduled posts processor every minute
-setInterval(processScheduledPosts, 60000);
+setInterval(processScheduledPosts, 500000);
 
 // ════════════════════════════════════════════════════════════
-// GET /api/posts - Get All Posts
+// GET /api/posts - Get All Posts (With Pagination & 5-Post Sync Limit)
 // ════════════════════════════════════════════════════════════
 router.get('/', authMiddleware, async (req, res) => {
   try {
     const query = { userId: req.user.id };
-    if (req.query.status) query.status = req.query.status;
 
-    const dbPosts = await Post.find(query).sort({ createdAt: -1 }).select('-_id -__v');
+    if (req.query.status && typeof req.query.status === 'string' && req.query.status.trim() !== '') {
+      query.status = req.query.status;
+    }
+
+    const page  = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 10;
+    const skip  = (page - 1) * limit;
+
     const allAccounts = await SocialAccount.find({ userId: req.user.id, isActive: true });
+    
     const fbAccounts = allAccounts.filter(a => a.platform === 'facebook');
     const igAccounts = allAccounts.filter(a => a.platform === 'instagram');
+    const ytAccounts = allAccounts.filter(a => a.platform === 'youtube');
 
+    // ── 1. Fetch Facebook Data (Limited to Latest 5) ───────────
     const fbPostMetaMap = {};
     for (const account of fbAccounts) {
       for (const page of account.pages || []) {
@@ -208,7 +259,7 @@ router.get('/', authMiddleware, async (req, res) => {
             {
               params: {
                 fields: 'id,message,story,created_time,full_picture,permalink_url,likes.summary(true),comments.summary(true)',
-                limit: 100,
+                limit: 5, // 📊 STRICT CORES REFRESH LIMIT FIXED HERE
                 access_token: pageToken,
               },
             }
@@ -233,6 +284,7 @@ router.get('/', authMiddleware, async (req, res) => {
       }
     }
 
+    // ── 2. Fetch Instagram Data (Limited to Latest 5) ──────────
     const igPostMetaMap = {};
     for (const account of igAccounts) {
       const page = (account.pages || [])[0];
@@ -245,7 +297,7 @@ router.get('/', authMiddleware, async (req, res) => {
           {
             params: {
               fields: 'id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count',
-              limit: 100,
+              limit: 5, // 📊 STRICT CORES REFRESH LIMIT FIXED HERE
               access_token: pageToken,
             },
           }
@@ -272,14 +324,67 @@ router.get('/', authMiddleware, async (req, res) => {
       }
     }
 
-    const dbPlatformPostIds = new Set();
-    for (const post of dbPosts) {
-      for (const r of post.platformResults || []) {
-        if (r.platformPostId) dbPlatformPostIds.add(r.platformPostId);
+    // ── 3. Fetch YouTube Data (Limited to Latest 5) ────────────
+    const ytPostMetaMap = {};
+    if (ytAccounts.length > 0) {
+      const { google } = require('googleapis');
+      
+      for (const account of ytAccounts) {
+        try {
+          const oauth2Client = new google.auth.OAuth2(
+            process.env.YOUTUBE_CLIENT_ID,
+            process.env.YOUTUBE_CLIENT_SECRET
+          );
+          
+          oauth2Client.setCredentials({
+            access_token: decrypt(account.accessToken),
+            refresh_token: account.refreshToken ? decrypt(account.refreshToken) : undefined
+          });
+
+          const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
+
+          const searchRes = await youtube.search.list({
+            part: 'snippet',
+            forMine: true,
+            type: 'video',
+            order: 'date'
+          });
+
+          const videoIds = searchRes.data.items.map(item => item.id.videoId).filter(Boolean);
+
+          if (videoIds.length > 0) {
+            const videoRes = await youtube.videos.list({
+              part: 'snippet,statistics',
+              id: videoIds.join(',')
+            });
+
+            for (const ytPost of videoRes.data.items || []) {
+              ytPostMetaMap[ytPost.id] = {
+                accountId:    account.id,
+                accountName:  account.name || account.accountName,
+                youtubeTitle: ytPost.snippet.title,
+                content:      ytPost.snippet.description || '',
+                mediaUrls:    ytPost.snippet.thumbnails?.high?.url ? [ytPost.snippet.thumbnails.high.url] : [],
+                mediaType:    'VIDEO',
+                createdTime:  ytPost.snippet.publishedAt,
+                permalinkUrl: `https://www.youtube.com/watch?v=${ytPost.id}`,
+                likes:        Number(ytPost.statistics?.likeCount) || 0,
+                comments:     Number(ytPost.statistics?.commentCount) || 0,
+                views:        Number(ytPost.statistics?.viewCount) || 0
+              };
+            }
+          }
+        } catch (err) {
+          logger.info(`YouTube fetch failed for ${account.name || account.accountName}: ${err.message}`);
+        }
       }
     }
 
-    const newPosts = [];
+    // ── 4. Sync New Posts to Database ──────────────────────────
+    const distinctPlatformPostIds = await Post.distinct('platformResults.platformPostId', { userId: req.user.id });
+    const dbPlatformPostIds = new Set(distinctPlatformPostIds);
+
+    // Sync Facebook
     for (const [fbPostId, meta] of Object.entries(fbPostMetaMap)) {
       if (dbPlatformPostIds.has(fbPostId)) continue;
       if (!meta.content.trim()) continue;
@@ -288,34 +393,16 @@ router.get('/', authMiddleware, async (req, res) => {
       const postTime = new Date(meta.createdTime);
 
       const newPost = new Post({
-        id: postId,
-        userId: req.user.id,
-        content: meta.content,
-        mediaUrls: meta.mediaUrls,
-        accountIds: [meta.accountId],
-        platforms: ['facebook'],
-        status: 'published',
-        publishedAt: postTime,
-        syncedFromPlatform: true,
-        platformResults: [{
-          platform: 'facebook',
-          accountId: meta.accountId,
-          platformPostId: fbPostId,
-          status: 'published',
-          publishedAt: postTime,
-          pages: [{ pageId: meta.pageId, pageName: meta.pageName, postId: fbPostId, status: 'published', error: null }],
-        }],
-        createdAt: postTime,
-        updatedAt: new Date(),
+        id: postId, userId: req.user.id, content: meta.content, mediaUrls: meta.mediaUrls,
+        accountIds: [meta.accountId], platforms: ['facebook'], status: 'published', publishedAt: postTime, syncedFromPlatform: true,
+        platformResults: [{ platform: 'facebook', accountId: meta.accountId, platformPostId: fbPostId, status: 'published', publishedAt: postTime, pages: [{ pageId: meta.pageId, pageName: meta.pageName, postId: fbPostId, status: 'published', error: null }] }],
+        createdAt: postTime, updatedAt: new Date(),
       });
 
-      try {
-        await newPost.save();
-        dbPlatformPostIds.add(fbPostId);
-        newPosts.push(newPost);
-      } catch (err) {}
+      try { await newPost.save(); dbPlatformPostIds.add(fbPostId); } catch (err) {}
     }
 
+    // Sync Instagram
     for (const [igPostId, meta] of Object.entries(igPostMetaMap)) {
       if (dbPlatformPostIds.has(igPostId)) continue;
       if (!meta.content.trim() && !meta.mediaUrls.length) continue;
@@ -324,38 +411,61 @@ router.get('/', authMiddleware, async (req, res) => {
       const postTime = new Date(meta.createdTime);
 
       const newIGPost = new Post({
-        id: postId,
-        userId: req.user.id,
-        content: meta.content,
-        mediaUrls: meta.mediaUrls,
-        mediaType: meta.mediaType,
-        accountIds: [meta.accountId],
-        platforms: ['instagram'],
-        status: 'published',
-        publishedAt: postTime,
+        id: postId, userId: req.user.id, content: meta.content, mediaUrls: meta.mediaUrls, mediaType: meta.mediaType,
+        accountIds: [meta.accountId], platforms: ['instagram'], status: 'published', publishedAt: postTime, syncedFromPlatform: true,
+        platformResults: [{ platform: 'instagram', accountId: meta.accountId, platformPostId: igPostId, status: 'published', publishedAt: postTime, pages: [{ pageId: meta.pageId, pageName: meta.pageName, postId: igPostId, status: 'published', error: null }] }],
+        createdAt: postTime, updatedAt: new Date(),
+      });
+
+      try { await newIGPost.save(); dbPlatformPostIds.add(igPostId); } catch (err) {}
+    }
+
+    // Sync YouTube
+    for (const [ytPostId, meta] of Object.entries(ytPostMetaMap)) {
+      if (dbPlatformPostIds.has(ytPostId)) continue;
+
+      const postId = uuidv4();
+      const postTime = new Date(meta.createdTime);
+
+      const newYTPost = new Post({
+        id: postId, 
+        userId: req.user.id, 
+        content: meta.content, 
+        youtubeTitle: meta.youtubeTitle,
+        mediaUrls: meta.mediaUrls, 
+        mediaType: 'VIDEO',
+        accountIds: [meta.accountId], 
+        platforms: ['youtube'], 
+        status: 'published', 
+        publishedAt: postTime, 
         syncedFromPlatform: true,
-        platformResults: [{
-          platform: 'instagram',
-          accountId: meta.accountId,
-          platformPostId: igPostId,
-          status: 'published',
-          publishedAt: postTime,
-          pages: [{ pageId: meta.pageId, pageName: meta.pageName, postId: igPostId, status: 'published', error: null }],
+        platformResults: [{ 
+          platform: 'youtube', 
+          accountId: meta.accountId, 
+          platformPostId: ytPostId, 
+          status: 'published', 
+          publishedAt: postTime, 
+          pages: [] 
         }],
-        createdAt: postTime,
+        createdAt: postTime, 
         updatedAt: new Date(),
       });
 
-      try {
-        await newIGPost.save();
-        dbPlatformPostIds.add(igPostId);
-      } catch (err) {}
+      try { await newYTPost.save(); dbPlatformPostIds.add(ytPostId); } catch (err) {}
     }
 
-    const allPosts = await Post.find(query).sort({ createdAt: -1 }).select('-_id -__v');
-    const result = [];
+    // ── 5. Assemble and Return Final Paginated Results ─────────
+    const totalPosts = await Post.countDocuments(query);
 
-    for (const post of allPosts) {
+    const paginatedPosts = await Post.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .select('-_id -__v');
+
+    const postsResult = [];
+
+    for (const post of paginatedPosts) {
       const accounts = [];
       for (const accId of post.accountIds || []) {
         const acc = await SocialAccount.findOne({ id: accId });
@@ -365,7 +475,9 @@ router.get('/', authMiddleware, async (req, res) => {
       const enrichedResults = (post.platformResults || []).map(r => {
         const fbMeta = r.platformPostId ? (fbPostMetaMap[r.platformPostId] || null) : null;
         const igMeta = r.platformPostId ? (igPostMetaMap[r.platformPostId] || null) : null;
-        const meta = fbMeta || igMeta;
+        const ytMeta = r.platformPostId ? (ytPostMetaMap[r.platformPostId] || null) : null;
+        
+        const meta = fbMeta || igMeta || ytMeta;
 
         return {
           platform:       r.platform,
@@ -376,11 +488,12 @@ router.get('/', authMiddleware, async (req, res) => {
           publishedAt:    r.publishedAt ? new Date(r.publishedAt).toISOString() : null,
           pageName:       meta?.pageName     || null,
           pageId:         meta?.pageId       || null,
-          permalinkUrl:   meta?.permalinkUrl || null,
+          permalinkUrl:   meta?.permalinkUrl || (r.platform === 'twitter' ? `https://x.com/i/status/${r.platformPostId}` : null),         
           likes:          meta?.likes        ?? null,
           comments:       meta?.comments     ?? null,
-          mediaType:      igMeta?.mediaType    || null,
-          thumbnailUrl:   igMeta?.thumbnailUrl || null,
+          views:          meta?.views        ?? null, 
+          mediaType:      meta?.mediaType    || null,
+          thumbnailUrl:   meta?.thumbnailUrl || null,
           igUsername:     igMeta?.igUsername   || null,
           pages: (r.pages || []).map(p => ({
             pageId:   p.pageId,
@@ -392,13 +505,22 @@ router.get('/', authMiddleware, async (req, res) => {
         };
       });
 
-      result.push({
+      postsResult.push({
         ...formatPost(post, accounts),
         platformResults: enrichedResults,
       });
     }
 
-    res.json(result);
+    res.json({
+      posts: postsResult,
+      pagination: {
+        total: totalPosts,
+        page,
+        limit,
+        totalPages: Math.ceil(totalPosts / limit)
+      }
+    });
+
   } catch (error) {
     logger.error('Failed to get posts', error);
     res.status(500).json({ detail: 'Failed to get posts' });
@@ -406,22 +528,33 @@ router.get('/', authMiddleware, async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════
-// GET /api/posts/:postId
+// GET /api/posts/:postId - Fetch a Particular Post By ID
 // ════════════════════════════════════════════════════════════
 router.get('/:postId', authMiddleware, async (req, res) => {
   try {
-    const post = await Post.findOne({ id: req.params.postId, userId: req.user.id })
-      .select('-_id -__v');
+    const post = await Post.findOne({ id: req.params.postId, userId: req.user.id }).select('-_id -__v');
     if (!post) return res.status(404).json({ detail: 'Post not found' });
 
     const accounts = [];
     for (const accId of post.accountIds || []) {
-      const acc = await SocialAccount.findOne({ id: accId })
-        .select('-accessToken -refreshToken -_id -__v');
+      const acc = await SocialAccount.findOne({ id: accId }).select('-accessToken -refreshToken -_id -__v');
       if (acc) accounts.push(safeAccount(acc));
     }
 
-    res.json(formatPost(post, accounts));
+    const baseFormattedPost = formatPost(post, accounts);
+    const isYoutubePost = post.platforms?.includes('youtube');
+    const dynamicThumbnail = post.youtubeThumbnail || (isYoutubePost ? post.mediaUrls?.[0] : null);
+
+    res.json({
+      ...baseFormattedPost,
+      youtubeTitle:       post.youtubeTitle || '',
+      youtubeTags:        Array.isArray(post.youtubeTags) ? post.youtubeTags : [], 
+      youtubeCategory:    post.youtubeCategory || '22',
+      youtubePrivacy:     post.youtubePrivacy || 'public',
+      youtubeMadeForKids: post.youtubeMadeForKids || false,
+      youtubeThumbnail:   dynamicThumbnail
+    });
+
   } catch (error) {
     logger.error('Failed to get post', error);
     res.status(500).json({ detail: 'Failed to get post' });
@@ -435,13 +568,18 @@ router.post('/', authMiddleware, async (req, res) => {
   try {
     const {
       content,
-      youtubeTitle, // 🆕 Extract YouTube Title from the request
       accountIds,
-      mediaUrls = [],
-      mediaFormats = {}, 
-      status = 'draft',
+      mediaUrls    = [],
+      mediaFormats = {},
+      status       = 'draft',
       scheduledAt,
-      selectedPages = {}
+      selectedPages = {},
+      youtubeTitle,
+      youtubeTags        = [],
+      youtubeCategory    = '22',
+      youtubePrivacy     = 'public',
+      youtubeMadeForKids = false,
+      youtubeThumbnail,
     } = req.body;
 
     if (!content || !content.trim()) {
@@ -457,8 +595,16 @@ router.post('/', authMiddleware, async (req, res) => {
       if (acc) platforms.push(acc.platform);
     }
 
-    const postId = uuidv4();
-    const now = new Date();
+    const hasYoutube = platforms.includes('youtube');
+    if (hasYoutube && (!youtubeTitle || !youtubeTitle.trim())) {
+      return res.status(400).json({ detail: 'YouTube video title is required' });
+    }
+    if (hasYoutube && !['public', 'unlisted', 'private'].includes(youtubePrivacy)) {
+      return res.status(400).json({ detail: 'Invalid YouTube privacy value' });
+    }
+
+    const postId        = uuidv4();
+    const now           = new Date();
     const scheduledDate = scheduledAt ? new Date(scheduledAt) : null;
 
     let postStatus = status;
@@ -469,36 +615,41 @@ router.post('/', authMiddleware, async (req, res) => {
     }
 
     const post = new Post({
-      id: postId,
-      userId: req.user.id,
+      id:           postId,
+      userId:       req.user.id,
       content,
-      youtubeTitle, // 🆕 Save the YouTube title to the database
       mediaUrls,
-      mediaFormats, 
+      mediaFormats,
       accountIds,
       platforms,
-      status: postStatus,
-      scheduledAt: scheduledDate,
+      selectedPages, // ✅ ADD THIS EXACT LINE HERE
+      status:       postStatus,
+      scheduledAt:  scheduledDate,
       platformResults: [],
-      createdAt: now,
-      updatedAt: now
+      createdAt:    now,
+      updatedAt:    now,
+      youtubeTitle:        youtubeTitle       || null,
+      youtubeTags:         Array.isArray(youtubeTags) ? youtubeTags : [],
+      youtubeCategory:     youtubeCategory    || '22',
+      youtubePrivacy:      youtubePrivacy     || 'public',
+      youtubeMadeForKids:  Boolean(youtubeMadeForKids),
+      youtubeThumbnail:    youtubeThumbnail   || null,
     });
 
     await post.save();
 
     if (postStatus === 'publishing') {
       const accountsFull = await getAccountsForPublish(accountIds, selectedPages);
-      // publishPostToPlatforms will now have access to post.youtubeTitle!
       const result = await publishPostToPlatforms(post, accountsFull);
 
-      post.status = result.status;
+      post.status          = result.status;
       post.platformResults = result.platformResults;
-      post.publishedAt = new Date();
+      post.publishedAt     = new Date();
 
       await Post.updateOne({ id: postId }, {
-        status: result.status,
+        status:          result.status,
         platformResults: result.platformResults,
-        publishedAt: post.publishedAt
+        publishedAt:     post.publishedAt,
       });
     }
 
@@ -528,7 +679,6 @@ router.delete('/:postId', authMiddleware, async (req, res) => {
           const account = await SocialAccount.findOne({ id: result.accountId });
           if (!account) continue;
 
-          // ✅ FACEBOOK: API Deletion is supported
           if (result.platform === 'facebook') {
             const pageToken = getPageTokenForPost(account, result.platformPostId);
             if (!pageToken) continue;
@@ -537,31 +687,43 @@ router.delete('/:postId', authMiddleware, async (req, res) => {
             });
           }
 
-          // ❌ INSTAGRAM: Pass the Meta Business Suite link to the frontend
           if (result.platform === 'instagram') {
-            
-            // NOTE: Replace these with how you store the business/page IDs in your DB
             const businessId = account.businessId || '2488876801380718'; 
             const assetId = account.pageId || '364011614307982';
-            
             const metaBusinessLink = `https://business.facebook.com/latest/posts/published_posts/?business_id=${businessId}&asset_id=${assetId}`;
 
             platformErrors.push({ 
               platform: 'instagram', 
               error: 'Meta does not allow apps to delete Instagram posts automatically.',
               actionRequired: 'manual_delete',
-              actionLink: metaBusinessLink // Passing the link to the frontend!
+              actionLink: metaBusinessLink
             });
             continue; 
           }
           
+          if (result.platform === 'youtube') {
+            const { google } = require('googleapis');
+            const oauth2Client = new google.auth.OAuth2(
+              process.env.YOUTUBE_CLIENT_ID,
+              process.env.YOUTUBE_CLIENT_SECRET
+            );
+
+            oauth2Client.setCredentials({
+              access_token: decrypt(account.accessToken),
+              refresh_token: account.refreshToken ? decrypt(account.refreshToken) : undefined
+            });
+
+            const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
+            await youtube.videos.delete({ id: result.platformPostId });
+            continue;
+          }
+
         } catch (err) {
           platformErrors.push({ platform: result.platform, error: err.message });
         }
       }
     }
 
-    // Always delete from your local database
     await Post.deleteOne({ id: req.params.postId, userId: req.user.id });
     
     res.json({
@@ -579,80 +741,159 @@ router.delete('/:postId', authMiddleware, async (req, res) => {
 // ════════════════════════════════════════════════════════════
 router.put('/:postId', authMiddleware, async (req, res) => {
   try {
+    const { 
+      content, 
+      mediaUrls, 
+      mediaFormats, 
+      accountIds, 
+      selectedPages,
+      youtubeTitle,
+      youtubeTags,
+      youtubeCategory,
+      youtubePrivacy,
+      youtubeMadeForKids,
+      youtubeThumbnail,
+      scheduledAt, // ✅ ADDED: Capture new scheduled date
+      status       // ✅ ADDED: Capture status changes
+    } = req.body;
+
     const post = await Post.findOne({ id: req.params.postId, userId: req.user.id });
     if (!post) return res.status(404).json({ detail: 'Post not found' });
 
-    const {
-      content, accountIds, mediaUrls, mediaFormats, mediaType, status, scheduledAt, syncToPlatform = true
-    } = req.body;
-
-    const updateData = { updatedAt: new Date() };
-
-    if (content !== undefined) updateData.content = content;
-    if (mediaUrls !== undefined) updateData.mediaUrls = mediaUrls;
-    if (mediaFormats !== undefined) updateData.mediaFormats = mediaFormats;
-    if (mediaType !== undefined) updateData.mediaType = mediaType;
-
-    if (accountIds !== undefined) {
-      updateData.accountIds = accountIds;
-      const platforms = [];
-      for (const accId of accountIds) {
-        const acc = await SocialAccount.findOne({ id: accId }).select('platform');
-        if (acc) platforms.push(acc.platform);
-      }
-      updateData.platforms = platforms;
+    // Store history to prevent overwriting existing platform IDs on edit
+    const historicalMap = {};
+    if (post.platformResults && post.platformResults.length > 0) {
+      post.platformResults.forEach(r => {
+        historicalMap[r.platform.toLowerCase()] = {
+          platformPostId: r.platformPostId,
+          publishedAt: r.publishedAt,
+          permalinkUrl: r.permalinkUrl,
+          pages: r.pages || []
+        };
+      });
     }
 
+    // ✅ UPDATE BASIC FIELDS
+    post.content       = content ?? post.content;
+    post.mediaUrls     = mediaUrls ?? post.mediaUrls;
+    post.mediaFormats  = mediaFormats ?? post.mediaFormats;
+    post.accountIds    = accountIds ?? post.accountIds;
+    post.selectedPages = selectedPages ?? post.selectedPages; // ✅ FIXED: Was missing in original code
+
+    // ✅ UPDATE SCHEDULED DATE
     if (scheduledAt !== undefined) {
-      updateData.scheduledAt = scheduledAt ? new Date(scheduledAt) : null;
-      if (scheduledAt && new Date(scheduledAt) > new Date()) {
-        updateData.status = 'scheduled';
+      post.scheduledAt = scheduledAt ? new Date(scheduledAt) : null;
+    }
+
+    // ✅ UPDATE STATUS & CHECK IF WE NEED TO PUBLISH NOW
+    const now = new Date();
+    let targetStatus = status ?? post.status;
+
+    if (targetStatus === 'scheduled' && post.scheduledAt && post.scheduledAt > now) {
+      post.status = 'scheduled';
+    } 
+    else if (targetStatus === 'published' || (targetStatus === 'scheduled' && post.scheduledAt && post.scheduledAt <= now)) {
+      // If the post has no previous platform results, it has never been published. Send to 'publishing' queue.
+      if (!post.platformResults || post.platformResults.length === 0) {
+        post.status = 'publishing';
+      } else {
+        post.status = 'published'; // It's an edit of an already published post
       }
+    } 
+    else {
+      post.status = targetStatus;
     }
 
-    if (status !== undefined) updateData.status = status;
+    // ✅ UPDATE YOUTUBE METADATA
+    if (youtubeTitle !== undefined)       post.youtubeTitle = youtubeTitle;
+    if (youtubeTags !== undefined)        post.youtubeTags = Array.isArray(youtubeTags) ? youtubeTags : [];
+    if (youtubeCategory !== undefined)    post.youtubeCategory = youtubeCategory;
+    if (youtubePrivacy !== undefined)     post.youtubePrivacy = youtubePrivacy;
+    if (youtubeMadeForKids !== undefined) post.youtubeMadeForKids = youtubeMadeForKids;
+    if (youtubeThumbnail !== undefined)   post.youtubeThumbnail = youtubeThumbnail;
 
-    if (content !== undefined && content !== post.content && post.status === 'published') {
-      for (const result of post.platformResults || []) {
-        if (result.status !== 'published' || !result.platformPostId) continue;
-        try {
-          const account = await SocialAccount.findOne({ accountId: result.accountId });
-          if (!account) continue;
+    post.updatedAt = new Date();
+    await post.save();
 
-          if (result.platform === 'facebook') {
-            const pageToken = getPageTokenForPost(account, result.platformPostId);
-            if (!pageToken) continue;
-            await axios.post(`https://graph.facebook.com/v19.0/${result.platformPostId}`, { message: content, access_token: pageToken });
+    // ──────────────────────────────────────────────────────────
+    // SCENARIO 1: First-time publish (Scheduled time arrived during edit)
+    // ──────────────────────────────────────────────────────────
+    if (post.status === 'publishing') {
+      const accountsFull = [];
+      for (const id of post.accountIds || []) {
+        const acc = await SocialAccount.findOne({ id, userId: req.user.id, isActive: true }).select('-_id -__v');
+        if (acc) {
+          let accObj = acc.toObject ? acc.toObject() : acc;
+          if (post.selectedPages && post.selectedPages[id] && accObj.pages) {
+            accObj.pages = accObj.pages.map(p => ({
+              ...p,
+              isSelected: post.selectedPages[id].includes(p.pageId)
+            }));
           }
-
-          if (result.platform === 'instagram') {
-            const page = (account.pages || [])[0];
-            if (!page?.pageAccessToken) continue;
-            const pageToken = decrypt(page.pageAccessToken);
-            await axios.post(`https://graph.facebook.com/v19.0/${result.platformPostId}`, null, {
-              params: { caption: content, comment_enabled: true, access_token: pageToken }
-            });
-          }
-        } catch (err) {}
+          accountsFull.push(accObj);
+        }
       }
+
+      const result = await publishPostToPlatforms(post, accountsFull);
+      
+      post.status = result.status;
+      post.platformResults = result.platformResults;
+      post.publishedAt = new Date();
+      await post.save();
+    }
+    // ──────────────────────────────────────────────────────────
+    // SCENARIO 2: Re-syncing an ALREADY published post (Edit mode)
+    // ──────────────────────────────────────────────────────────
+    else if (post.status === 'published' && post.platformResults.length > 0) {
+      const accounts = [];
+      for (const id of post.accountIds || []) {
+        const acc = await SocialAccount.findOne({ id, userId: req.user.id, isActive: true });
+        if (acc) {
+          if (selectedPages && selectedPages[id] && acc.pages) {
+            acc.pages = acc.pages.map(p => ({
+              ...p,
+              isSelected: selectedPages[id].includes(p.pageId)
+            }));
+          }
+          accounts.push(acc);
+        }
+      }
+
+      post.platformResults = (post.platformResults || []).map(r => {
+        const history = historicalMap[r.platform.toLowerCase()];
+        if (history) {
+          r.platformPostId = history.platformPostId;
+          r.pages = history.pages;
+          r.status = 'published';
+        }
+        return r;
+      });
+
+      const syncResult = await publishPostToPlatforms(post, accounts);
+      
+      post.platformResults = syncResult.platformResults.map(newRes => {
+        const history = historicalMap[newRes.platform.toLowerCase()];
+        return {
+          platform:       newRes.platform,
+          accountId:      newRes.accountId,
+          platformPostId: newRes.platformPostId || history?.platformPostId || null,
+          status:         newRes.status,
+          error:          newRes.error || null,
+          publishedAt:    newRes.publishedAt || history?.publishedAt || new Date(),
+          permalinkUrl:   newRes.permalinkUrl || history?.permalinkUrl || null,
+          pages:          newRes.pages && newRes.pages.length > 0 ? newRes.pages : (history?.pages || [])
+        };
+      });
+
+      await post.save();
     }
 
-    await Post.updateOne({ id: req.params.postId }, updateData);
-    const updatedPost = await Post.findOne({ id: req.params.postId }).select('-_id -__v');
-
-    const accounts = [];
-    for (const accId of updatedPost.accountIds || []) {
-      const acc = await SocialAccount.findOne({ id: accId }).select('-accessToken -refreshToken -_id -__v');
-      if (acc) accounts.push(safeAccount(acc));
-    }
-
-    res.json(formatPost(updatedPost, accounts));
+    res.json(post);
   } catch (error) {
     logger.error('Failed to update post', error);
     res.status(500).json({ detail: 'Failed to update post' });
   }
 });
-
 // ════════════════════════════════════════════════════════════
 // POST /api/posts/:postId/publish
 // ════════════════════════════════════════════════════════════
@@ -686,49 +927,35 @@ router.post('/:postId/publish', authMiddleware, async (req, res) => {
 // ════════════════════════════════════════════════════════════════
 // POST /upload-chunk - Chunked upload for large files
 // ════════════════════════════════════════════════════════════════
-
 const chunkUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 500 * 1024 * 1024 }
 });
 
 router.post('/upload-chunk', authMiddleware, chunkUpload.single('file'), async (req, res) => {
-
   try {
     const { chunkIndex, totalChunks, uploadId, fileId, originalName, mimeType } = req.body;
-    
-    // Accept either uploadId or fileId
     const fileIdentifier = fileId || uploadId;
 
     if (!req.file) {
-      return res.status(400).json({ 
-        success: false,
-        detail: 'No chunk uploaded' 
-      });
+      return res.status(400).json({ success: false, detail: 'No chunk uploaded' });
     }
-
     if (!fileIdentifier || chunkIndex === undefined || totalChunks === undefined) {
-      return res.status(400).json({ 
-        success: false,
-        detail: 'Missing fileId/uploadId, chunkIndex, or totalChunks' 
-      });
+      return res.status(400).json({ success: false, detail: 'Missing required chunk fields' });
     }
 
     const chunksDir = path.join(__dirname, '../uploads/chunks');
     const sessionDir = path.join(chunksDir, fileIdentifier);
 
-    // Create folder if needed
     if (!fs.existsSync(sessionDir)) {
       fs.mkdirSync(sessionDir, { recursive: true });
     }
 
-    // Save chunk
     const chunkPath = path.join(sessionDir, `chunk_${chunkIndex}`);
     fs.writeFileSync(chunkPath, req.file.buffer);
 
     logger.info(`[CHUNK] Saved chunk ${chunkIndex}/${totalChunks} for file ${fileIdentifier}`);
 
-    // Check if all chunks are uploaded
     const uploadedChunks = fs.readdirSync(sessionDir).filter(f => f.startsWith('chunk_'));
     const allChunksUploaded = uploadedChunks.length === parseInt(totalChunks);
 
@@ -740,36 +967,29 @@ router.post('/upload-chunk', authMiddleware, chunkUpload.single('file'), async (
       });
     }
 
-    // ✅ ALL CHUNKS RECEIVED - Assemble and process
     logger.info(`[CHUNK] All chunks received for ${fileIdentifier}, assembling...`);
 
-    // Sort and concatenate chunks
     const sortedChunks = uploadedChunks
-      .sort((a, b) => {
-        const aNum = parseInt(a.split('_')[1]);
-        const bNum = parseInt(b.split('_')[1]);
-        return aNum - bNum;
-      })
+      .sort((a, b) => parseInt(a.split('_')[1]) - parseInt(b.split('_')[1]))
       .map(f => fs.readFileSync(path.join(sessionDir, f)));
 
     const fileBuffer = Buffer.concat(sortedChunks);
+
     const isVideo = mimeType?.startsWith('video');
     const timestamp = Date.now();
-    const cleanName = path.parse(originalName).name;
-
+  let cleanName = path.parse(originalName).name.replace(/[^a-zA-Z0-9\u0900-\u097F]/g, '_');
+    if (cleanName.length > 20) {
+      cleanName = cleanName.substring(0, 20);
+    }
     if (isVideo) {
-      // VIDEO: Save as-is
       const filename = `${timestamp}-${cleanName}.mp4`;
       const filepath = path.join(__dirname, '../uploads', filename);
 
       fs.writeFileSync(filepath, fileBuffer);
-
       const fileUrl = `https://${req.get('host')}/uploads/${filename}`;
       const stats = fs.statSync(filepath);
 
-      // Clean up chunks
       fs.rmSync(sessionDir, { recursive: true });
-
       logger.info(`[UPLOAD] Video assembled: ${filename} (${stats.size} bytes)`);
 
       return res.status(200).json({
@@ -781,7 +1001,6 @@ router.post('/upload-chunk', authMiddleware, chunkUpload.single('file'), async (
         size: stats.size
       });
     } else {
-      // IMAGE: Convert to baseline JPEG
       const filename = `${timestamp}-${cleanName}.jpg`;
       const filepath = path.join(__dirname, '../uploads', filename);
 
@@ -789,20 +1008,13 @@ router.post('/upload-chunk', authMiddleware, chunkUpload.single('file'), async (
         await sharp(fileBuffer)
           .rotate()
           .resize(1080, 1080, { fit: 'inside', withoutEnlargement: true })
-          .jpeg({
-            quality: 85,
-            progressive: false,
-            mozjpeg: true,
-            density: 72
-          })
+          .jpeg({ quality: 85, progressive: false, mozjpeg: true, density: 72 })
           .toFile(filepath);
 
         const stats = fs.statSync(filepath);
         const fileUrl = `https://${req.get('host')}/uploads/${filename}`;
 
-        // Clean up chunks
         fs.rmSync(sessionDir, { recursive: true });
-
         logger.info(`[UPLOAD] Image assembled: ${filename} (${stats.size} bytes)`);
 
         return res.status(200).json({
@@ -816,18 +1028,12 @@ router.post('/upload-chunk', authMiddleware, chunkUpload.single('file'), async (
       } catch (sharpError) {
         logger.error(`[UPLOAD] Sharp error: ${sharpError.message}`);
         fs.rmSync(sessionDir, { recursive: true });
-        return res.status(500).json({
-          success: false,
-          detail: `Image processing failed: ${sharpError.message}`
-        });
+        return res.status(500).json({ success: false, detail: `Image processing failed: ${sharpError.message}` });
       }
     }
   } catch (error) {
     logger.error(`[CHUNK] Error: ${error.message}`);
-    res.status(500).json({
-      success: false,
-      detail: error.message || 'Failed to upload chunk'
-    });
+    res.status(500).json({ success: false, detail: error.message || 'Failed to upload chunk' });
   }
 });
 

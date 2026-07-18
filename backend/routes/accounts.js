@@ -29,8 +29,8 @@ const OAUTH_CREDENTIALS = {
   github:    { clientId: process.env.GITHUB_CLIENT_ID,  clientSecret: process.env.GITHUB_CLIENT_SECRET },
 };
 
-const getBaseUrl    = () => process.env.FRONTEND_URL
-const getBackendUrl = () => process.env.FRONTEND_URL  
+const getBaseUrl    = () => process.env.FRONTEND_URL;
+const getBackendUrl = () => process.env.BACKEND_URL || process.env.FRONTEND_URL; 
 
 // ─────────────────────────────────────────────────────────────
 // formatAccount — includes pages[]
@@ -44,7 +44,7 @@ const formatAccount = (acc) => ({
   profilePicture: acc.profilePicture,
   isActive:       acc.isActive,
   followers:      acc.followers,
-  connectedAt:    acc.connectedAt.toISOString(),
+  connectedAt:    acc.connectedAt ? acc.connectedAt.toISOString() : new Date().toISOString(),
   pages: (acc.pages || []).map(p => ({
     pageId:     p.pageId,
     pageName:   p.pageName,
@@ -128,103 +128,83 @@ const saveInstagramAccount = async (userId, accessToken) => {
   const longLivedToken = await exchangeForLongLivedToken(accessToken);
 
   const pagesRes = await axios.get('https://graph.facebook.com/me/accounts', {
-    params: {
-      fields:       'id,name,access_token,instagram_business_account,category',
-      access_token: longLivedToken
-    }
+    params: { fields: 'id,name,access_token,instagram_business_account,category', access_token: longLivedToken }
   });
+  
   const pages = pagesRes.data.data || [];
+  logger.info('DEBUG: Meta returned these accounts:', JSON.stringify(pages));
 
   const pagesWithIG = pages.filter(p => p.instagram_business_account?.id);
+  
   if (pagesWithIG.length === 0) {
-    throw new Error(
-      'No Instagram Business or Creator account found. ' +
-      'Please link your Instagram to a Facebook Page in Meta Business Suite first.'
+    throw new Error('No Instagram Business account found.');
+  }
+
+  for (const page of pagesWithIG) {
+    const igId = page.instagram_business_account.id;
+    const pageAccessToken = page.access_token;
+
+    const igRes = await axios.get(`https://graph.facebook.com/${igId}`, {
+      params: { fields: 'id,username,name,profile_picture_url,followers_count', access_token: pageAccessToken }
+    });
+    const ig = igRes.data;
+
+    await SocialAccount.findOneAndUpdate(
+      { userId, platform: 'instagram', accountId: ig.id },
+      {
+        id: uuidv4(),
+        userId,
+        platform: 'instagram',
+        accountName: ig.name || ig.username,
+        accountId: ig.id,
+        profilePicture: ig.profile_picture_url || '',
+        accessToken: encrypt(longLivedToken),
+        isActive: true,
+        followers: ig.followers_count || 0,
+        pages: [{
+          pageId: page.id,
+          pageName: page.name,
+          pageAccessToken: encrypt(pageAccessToken),
+          category: page.category || '',
+          isSelected: true
+        }],
+        connectedAt: new Date()
+      },
+      { upsert: true, new: true }
     );
   }
 
-  const page            = pagesWithIG[0];
-  const igId            = page.instagram_business_account.id;
-  const pageAccessToken = page.access_token;
-
-  const igRes = await axios.get(`https://graph.facebook.com/${igId}`, {
-    params: {
-      fields:       'id,username,name,biography,followers_count,media_count,profile_picture_url,website',
-      access_token: pageAccessToken
-    }
-  });
-  const ig = igRes.data;
-
-  const saved = await SocialAccount.findOneAndUpdate(
-    { userId, platform: 'instagram' },
-    {
-      id:             uuidv4(),
-      userId,
-      platform:       'instagram',
-      accountName:    ig.name || ig.username,
-      accountId:      ig.id,
-      profilePicture: ig.profile_picture_url || '',
-      accessToken:    encrypt(longLivedToken),
-      tokenExpiry:    new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
-      isActive:       true,
-      followers:      ig.followers_count || 0,
-      pages: [{
-        pageId:          page.id,
-        pageName:        page.name,
-        pageAccessToken: encrypt(pageAccessToken),
-        category:        page.category || '',
-        isSelected:      true
-      }],
-      connectedAt: new Date()
-    },
-    { upsert: true, new: true }
-  );
-
-  logger.info('🔗', `Instagram saved for user ${userId} — @${ig.username} via page "${page.name}"`);
-  return saved;
+  logger.info('🔗', `Processed ${pagesWithIG.length} Instagram accounts for user ${userId}`);
 };
 
 // ─────────────────────────────────────────────────────────────
-// 🆕 POPUP HTML — postMessage's the opener and closes window
+// POPUP HTML Handler
 // ─────────────────────────────────────────────────────────────
 const sendPopupMessage = (res, platform, success, message = '') => {
   const FRONTEND_URL = getBaseUrl();
-  const safeMsg = String(message).replace(/'/g, "\\'").replace(/\n/g, ' ');
-  const redirectUrl = success 
-    ? `${FRONTEND_URL}/accounts?connected=${platform}`
-    : `${FRONTEND_URL}/accounts?error=${platform}_failed&msg=${encodeURIComponent(safeMsg)}`;
+  const safeMsg = String(message).replace(/[^a-zA-Z0-9 _-]/g, ''); 
+  const redirectUrl = `${FRONTEND_URL}/accounts?error=${platform}_failed`;
 
   return res.send(`
     <!DOCTYPE html>
     <html>
-      <head><title>Connecting ${platform}...</title></head>
-      <body style="margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f8fafc;">
-        <div style="display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;">
-          <div style="font-size:48px;margin-bottom:16px;">${success ? '✅' : '❌'}</div>
-          <p style="color:#475569;font-size:16px;text-align:center;padding:0 20px;">
-            ${success ? 'Success! Returning to dashboard...' : 'Connection failed. Closing...'}
-          </p>
-        </div>
+      <head><title>Authentication Complete</title></head>
+      <body>
         <script>
-          // Wait 1.5 seconds so the user sees the checkmark
-          setTimeout(() => {
-            if (window.opener && !window.opener.closed) {
-              // Tell the main window what happened
-              window.opener.postMessage(
-                {
-                  source: 'socialhub_oauth', // Unique tag so frontend knows it's from us
-                  platform: '${platform}',
-                  success: ${success},
-                  message: '${safeMsg}'
-                },
-                '*'
-              );
-              window.close(); // Close this popup window
-            } else {
-              // Fallback if they didn't use a popup
-              window.location.href = '${redirectUrl}';
-            }
-          }, 1500);
+          if (window.opener && !window.opener.closed) {
+            window.opener.postMessage(
+              {
+                source: 'socialhub_oauth',
+                platform: '${platform}',
+                success: ${success},
+                message: '${safeMsg}'
+              },
+              '*'
+            );
+            window.close();
+          } else {
+            window.location.href = '${redirectUrl}';
+          }
         </script>
       </body>
     </html>
@@ -232,68 +212,93 @@ const sendPopupMessage = (res, platform, success, message = '') => {
 };
 
 const { google } = require('googleapis');
-// const { encrypt } = require('../utils/encryption'); // Make sure your encrypt utility is imported!
 
-const saveYouTubeAccount= async(userId, tokens)=>{
-  // Set up the client with the tokens we just got
+const saveYouTubeAccount = async (userId, tokens) => {
   const oauth2Client = new google.auth.OAuth2(
     process.env.YOUTUBE_CLIENT_ID,
     process.env.YOUTUBE_CLIENT_SECRET
   );
   oauth2Client.setCredentials(tokens);
 
-  // Fetch the user's YouTube Channel details
   const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
-  const channelRes = await youtube.channels.list({ 
-    part: 'snippet', 
-    mine: true 
+
+  // 1. Fetch all channels including Brand Accounts
+  let channelRes = await youtube.channels.list({ 
+    part: 'snippet,contentDetails', 
+    mine: true
   });
+
+  // Fallback if managedByMe returns empty structural blocks
+  if (!channelRes.data.items || channelRes.data.items.length === 0) {
+    channelRes = await youtube.channels.list({ 
+      part: 'snippet,contentDetails', 
+      mine: true
+    });
+  }
+
+  console.log('DEBUG: YouTube API returned channels:', JSON.stringify(channelRes.data.items, null, 2));
 
   if (!channelRes.data.items || channelRes.data.items.length === 0) {
     throw new Error('No YouTube channel found for this Google account.');
   }
 
-  const channel = channelRes.data.items[0];
-  const channelId = channel.id;
-  const channelName = channel.snippet.title;
-  const channelPic = channel.snippet.thumbnails.default.url;
+  // 2. Iterate through every channel returned in the array safely
+  const savedResults = [];
+  for (const channel of channelRes.data.items) {
+    try {
+      const channelId = channel.id;
+      const channelName = channel.snippet.title;
+      const channelPic = channel.snippet.thumbnails.default.url;
 
-  // Preserve the refresh token and check for existing custom ID
-  const existingAccount = await SocialAccount.findOne({ 
-    userId, 
-    platform: 'youtube', 
-    accountId: channelId 
-  });
+      const existingAccount = await SocialAccount.findOne({ 
+        userId, 
+        platform: 'youtube', 
+        accountId: channelId 
+      });
 
-  let finalRefreshToken = tokens.refresh_token ? encrypt(tokens.refresh_token) : null;
-  if (!finalRefreshToken && existingAccount && existingAccount.refreshToken) {
-    finalRefreshToken = existingAccount.refreshToken; 
+      let finalRefreshToken = tokens.refresh_token ? encrypt(tokens.refresh_token) : null;
+      if (!finalRefreshToken && existingAccount && existingAccount.refreshToken) {
+        finalRefreshToken = existingAccount.refreshToken; 
+      }
+
+      const customId = existingAccount && existingAccount.id ? existingAccount.id : uuidv4();
+
+      // 3. Save/Update each channel as a separate document
+      const saved = await SocialAccount.findOneAndUpdate(
+        { userId, platform: 'youtube', accountId: channelId },
+        {
+          $set: {
+            id: customId,
+            userId,
+            platform: 'youtube',
+            accountId: channelId,
+            accountName: channelName, 
+            profilePicture: channelPic, 
+            accessToken: encrypt(tokens.access_token),
+            refreshToken: finalRefreshToken,
+            // ✅ CRITICAL FIX: Replaced "undefined" with the 1-hour fallback (3.5M milliseconds)
+            tokenExpiry: tokens.expiry_date ? new Date(tokens.expiry_date) : new Date(Date.now() + 3500000), 
+            isActive: true,
+            updatedAt: new Date()
+          },
+          $setOnInsert: {
+            connectedAt: new Date()
+          }
+        },
+        { upsert: true, new: true }
+      );
+      savedResults.push(saved);
+    } catch (loopError) {
+      logger.error(`Error saving individual YouTube channel: ${channel.snippet?.title}`, loopError);
+    }
   }
 
-  // 👈 If the account exists, keep its ID. If it's new, generate a new UUID!
-  const customId = existingAccount && existingAccount.id ? existingAccount.id : uuidv4();
-
-  // Save to Database
-  await SocialAccount.findOneAndUpdate(
-    { userId, platform: 'youtube', accountId: channelId },
-    {
-      id: customId, // 👈 SAVE THE CUSTOM ID HERE
-      userId,
-      platform: 'youtube',
-      accountId: channelId,
-      name: channelName,
-      avatarUrl: channelPic,
-      accessToken: encrypt(tokens.access_token),
-      refreshToken: finalRefreshToken,
-      status: 'connected',
-      updatedAt: new Date()
-    },
-    { upsert: true, new: true }
-  );
-}
+  logger.info('🔗', `YouTube: Successfully synced ${savedResults.length} channel(s) for user ${userId}`);
+  return savedResults;
+};
 
 // ═════════════════════════════════════════════════════════════
-// EXISTING ROUTES
+// ROUTES
 // ═════════════════════════════════════════════════════════════
 
 router.get('/', authMiddleware, async (req, res) => {
@@ -308,35 +313,33 @@ router.get('/', authMiddleware, async (req, res) => {
 
 router.get('/platforms', authMiddleware, async (req, res) => {
   try {
-    const userAccounts = await SocialAccount.find({ userId: req.user.id })
-      .select('-accessToken -refreshToken -__v');
+    const userAccounts = await SocialAccount.find({ userId: req.user.id });
 
-    const accountsByPlatform = {};
-    userAccounts.forEach(acc => {
-      accountsByPlatform[acc.platform] = formatAccount(acc);
+    const result = PLATFORMS.map(platform => {
+      const matchingAccounts = userAccounts
+        .filter(acc => acc.platform === platform.platform)
+        .map(formatAccount);
+
+      return {
+        platform:       platform.platform,
+        name:           platform.name,
+        color:          platform.color,
+        oauthSupported: platform.oauthSupported,
+        connected:      matchingAccounts.length > 0,
+        account:        matchingAccounts[0] || null, 
+        accounts:       matchingAccounts 
+      };
     });
-
-    const result = PLATFORMS.map(platform => ({
-      platform:       platform.platform,
-      name:           platform.name,
-      color:          platform.color,
-      oauthSupported: platform.oauthSupported,
-      connected:      !!accountsByPlatform[platform.platform],
-      account:        accountsByPlatform[platform.platform] || null
-    }));
 
     res.json(result);
   } catch (error) {
-    logger.error('Failed to get platforms', error);
     res.status(500).json({ detail: 'Failed to get platforms' });
   }
 });
 
-// ── Legacy FB SDK token route — kept for backward compatibility ──
 router.post('/connect/facebook/token', async (req, res) => {
   try {
     const { accessToken } = req.body;
-
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({ success: false, message: 'No token provided' });
@@ -344,57 +347,27 @@ router.post('/connect/facebook/token', async (req, res) => {
 
     const token = authHeader.split(' ')[1];
     let userId;
-
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       userId = decoded.user_id;
     } catch (err) {
-      if (err.name === 'TokenExpiredError') {
-        return res.status(401).json({ success: false, message: 'Token expired — please login again' });
-      }
-      return res.status(401).json({ success: false, message: 'Invalid token' });
-    }
-
-    if (!accessToken) {
-      return res.status(400).json({ success: false, message: 'accessToken is required' });
-    }
-
-    try {
-      await axios.get('https://graph.facebook.com/me', {
-        params: { access_token: accessToken, fields: 'id' }
-      });
-    } catch {
-      return res.status(400).json({ success: false, message: 'Invalid or expired Facebook token' });
+      return res.status(401).json({ success: false, message: 'Invalid or expired session token' });
     }
 
     const saved = await saveFacebookAccount(userId, accessToken);
-
     res.json({
       success:     true,
       message:     'Facebook connected successfully',
       accountName: saved.accountName,
-      pages: (saved.pages || []).map(p => ({
-        pageId:   p.pageId,
-        pageName: p.pageName,
-        category: p.category
-      }))
+      pages: (saved.pages || []).map(p => ({ pageId: p.pageId, pageName: p.pageName, category: p.category }))
     });
-
   } catch (err) {
-    logger.error('Facebook token connect failed', err.response?.data || err.message);
-    const fbCode = err.response?.data?.error?.code;
-    if (fbCode === 190) return res.status(400).json({ success: false, message: 'Token invalid or expired' });
-    if (fbCode === 200) return res.status(400).json({ success: false, message: 'Missing permissions' });
-    res.status(500).json({ success: false, message: 'Failed to connect Facebook account' });
+    res.status(500).json({ success: false, message: 'Failed to connect account' });
   }
 });
 
-
 // ═════════════════════════════════════════════════════════════
-// 🆕 OAUTH START — /api/accounts/oauth/:platform
-// For facebook + instagram: builds the FB OAuth URL inline so
-// it works regardless of buildAuthUrl. For others: falls back
-// to buildAuthUrl as before.
+// OAUTH INITIATOR
 // ═════════════════════════════════════════════════════════════
 router.get('/oauth/:platform', async (req, res) => {
   try {
@@ -408,19 +381,17 @@ router.get('/oauth/:platform', async (req, res) => {
       return res.redirect(`${getBaseUrl()}/accounts?error=invalid_platform`);
     }
 
-    const existing = await SocialAccount.findOne({ userId: user_id, platform });
-    if (existing) return res.redirect(`${getBaseUrl()}/accounts?connected=${platform}&error=already_connected`);
-
     const credentials = OAUTH_CREDENTIALS[platform];
+    console.log(" twitter credentials",credentials)
+
     if (!credentials?.clientId) {
-      logger.info(`🔗 Demo mode for ${platform} (missing client_id env var)`);
+      logger.info(`🔗 Demo mode for ${platform}`);
       return res.redirect(`${getBackendUrl()}/api/accounts/oauth/${platform}/callback?user_id=${user_id}&demo=true`);
     }
 
     const redirectUri = `${getBackendUrl()}/api/accounts/oauth/${platform}/callback`;
     const state       = Buffer.from(JSON.stringify({ user_id, platform })).toString('base64');
 
-    // 🆕 INLINE FB / IG OAUTH URL
     if (platform === 'facebook' || platform === 'instagram') {
       const scope = platform === 'facebook'
         ? 'public_profile,pages_show_list,pages_read_engagement,pages_manage_posts'
@@ -435,16 +406,14 @@ router.get('/oauth/:platform', async (req, res) => {
         `&response_type=code` +
         `&auth_type=rerequest`;
 
-      logger.info('🔗', `Redirecting popup to ${platform} OAuth for user ${user_id}`);
       return res.redirect(authUrl);
     }
 
-    // 🆕 YOUTUBE OAUTH URL
     if (platform === 'youtube') {
       const scope = [
         'https://www.googleapis.com/auth/youtube.upload',
         'https://www.googleapis.com/auth/youtube.readonly',
-        'https://www.googleapis.com/auth/userinfo.profile'
+        'https://www.googleapis.com/auth/userinfo.profile',
       ].join(' ');
 
       const authUrl =
@@ -454,31 +423,41 @@ router.get('/oauth/:platform', async (req, res) => {
         `&scope=${encodeURIComponent(scope)}` +
         `&state=${state}` +
         `&response_type=code` +
-        `&access_type=offline` +  // CRITICAL: Gets the refresh token
-        `&prompt=consent`;        // CRITICAL: Forces consent screen to ensure refresh token is sent
+        `&access_type=offline` +  
+        `&prompt=consent select_account`; 
 
-      logger.info('🔗', `Redirecting to YouTube OAuth for user ${user_id}`);
       return res.redirect(authUrl);
     }
 
-    // ── Other platforms: use buildAuthUrl as before ─────────
+    if (platform === 'twitter' || platform === 'x') {
+      const scope = ['tweet.read', 'tweet.write', 'users.read', 'offline.access'].join(' ');
+
+      const authUrl =
+        `https://x.com/i/oauth2/authorize?` + 
+        `client_id=${credentials.clientId}` +
+        `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+        `&scope=${encodeURIComponent(scope)}` +
+        `&state=${state}` +
+        `&response_type=code` +
+        `&code_challenge=${state}` +       
+        `&code_challenge_method=plain`;    
+
+      logger.info('🔗', `Redirecting popup to clean X.com OAuth gateway for user ${user_id}`);
+      return res.redirect(authUrl);
+    }
+
     const authUrl = buildAuthUrl(platform, credentials.clientId, redirectUri, state);
     if (!authUrl) return res.redirect(`${getBaseUrl()}/accounts?error=oauth_config_error`);
-
-    logger.info('🔗', `Redirecting to ${platform} OAuth for user ${user_id}`);
     return res.redirect(authUrl);
   } catch (error) {
-    logger.error('OAuth initiation failed', error);
+    console.log(" account error",error);
     return res.redirect(`${getBaseUrl()}/accounts?error=oauth_init_failed`);
   }
 });
 
 // ═════════════════════════════════════════════════════════════
-// 🆕 OAUTH CALLBACK — exchanges code for token, saves account,
-// returns HTML that postMessage's the opener and closes popup.
+// OAUTH CALLBACK ROUTE
 // ═════════════════════════════════════════════════════════════
-// Find this in backend/routes/accounts.js and replace the callback route
-
 router.get('/oauth/:platform/callback', async (req, res) => {
   try {
     const { platform } = req.params;
@@ -498,317 +477,138 @@ router.get('/oauth/:platform/callback', async (req, res) => {
       }
     }
 
-    if (!userId) {
-      return sendPopupMessage(res, platform, false, 'Missing user_id');
-    }
+    if (!userId) return sendPopupMessage(res, platform, false, 'Missing user_id');
 
-    const platformConfig = PLATFORMS.find(p => p.platform === platform);
-    if (!platformConfig) {
-      return sendPopupMessage(res, platform, false, 'Invalid platform');
-    }
-
-    // ── Already connected? ──────────────────────────────────
-    const existing = await SocialAccount.findOne({ userId, platform });
-    if (existing) {
-      return sendPopupMessage(res, platform, true, 'Already connected');
-    }
-
-    // ── Demo mode ───────────────────────────────────────────
     if (demo === 'true' || !code) {
       const account = new SocialAccount({
         id:             uuidv4(),
         userId,
         platform,
-        accountName:    `Demo ${platformConfig.name} Account`,
+        accountName:    `Demo Account`,
         accountId:      `demo_${platform}_${userId.substring(0, 8)}`,
         profilePicture: `https://api.dicebear.com/7.x/initials/svg?seed=${platform}`,
-        accessToken:    encrypt(`demo_access_token_${platform}`),
-        refreshToken:   encrypt(`demo_refresh_token_${platform}`),
-        tokenExpiry:    new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
+        accessToken:    encrypt(`demo_token`),
         isActive:       true,
-        followers:      1000 + Math.abs(platform.split('').reduce((a, c) => a + c.charCodeAt(0), 0)) % 9000,
-        connectedAt:    new Date(),
-        pages:          []
+        followers:      5000,
+        connectedAt:    new Date()
       });
       await account.save();
-      logger.info('🔗', `${platform} connected (demo) for user ${userId}`);
       return sendPopupMessage(res, platform, true);
     }
 
-    // ── 🆕 REAL OAUTH — Facebook / Instagram code exchange ───
     if (platform === 'facebook' || platform === 'instagram') {
       const credentials = OAUTH_CREDENTIALS[platform];
       const redirectUri = `${getBackendUrl()}/api/accounts/oauth/${platform}/callback`;
 
-      // 1. Exchange code for short-lived token
-      const tokenRes = await axios.get(
-        'https://graph.facebook.com/v19.0/oauth/access_token',
+      const tokenRes = await axios.get('https://graph.facebook.com/v19.0/oauth/access_token', {
+        params: { client_id: credentials.clientId, client_secret: credentials.clientSecret, redirect_uri: redirectUri, code }
+      });
+
+      if (platform === 'facebook') {
+        await saveFacebookAccount(userId, tokenRes.data.access_token);
+      } else {
+        await saveInstagramAccount(userId, tokenRes.data.access_token);
+      }
+      return sendPopupMessage(res, platform, true);
+    }
+
+    if (platform === 'youtube') {
+      const credentials = OAUTH_CREDENTIALS[platform];
+      const redirectUri = `${getBackendUrl()}/api/accounts/oauth/${platform}/callback`;
+
+      const oauth2Client = new google.auth.OAuth2(
+        credentials.clientId,
+        credentials.clientSecret,
+        redirectUri
+      );
+
+      const { tokens } = await oauth2Client.getToken(code);
+      
+      await saveYouTubeAccount(userId, tokens);
+      
+      return sendPopupMessage(res, platform, true);
+    }
+
+    if (platform === 'twitter' || platform === 'x') {
+      const credentials = OAUTH_CREDENTIALS.twitter; 
+      const redirectUri = `${getBackendUrl()}/api/accounts/oauth/${platform}/callback`;
+
+      const basicAuthHeader = Buffer.from(`${credentials.clientId}:${credentials.clientSecret}`).toString('base64');
+
+      const tokenRes = await axios.post(
+        'https://api.twitter.com/2/oauth2/token',
+        new URLSearchParams({
+          code,
+          grant_type: 'authorization_code',
+          redirect_uri: redirectUri,
+          code_verifier: state 
+        }),
         {
-          params: {
-            client_id:     credentials.clientId,
-            client_secret: credentials.clientSecret,
-            redirect_uri:  redirectUri,
-            code
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Authorization': `Basic ${basicAuthHeader}`
           }
         }
       );
 
-      const shortLivedToken = tokenRes.data.access_token;
+      const { access_token, refresh_token } = tokenRes.data;
 
-      // 2. Save via existing helpers
-      try {
-        if (platform === 'facebook') {
-          await saveFacebookAccount(userId, shortLivedToken);
-        } else {
-          await saveInstagramAccount(userId, shortLivedToken);
-        }
-        logger.info('🔗', `${platform} connected via OAuth popup for user ${userId}`);
-        return sendPopupMessage(res, platform, true);
-      } catch (saveErr) {
-        logger.error(`Save ${platform} failed`, saveErr.message);
-        return sendPopupMessage(res, platform, false, saveErr.message);
-      }
+      const userRes = await axios.get('https://api.twitter.com/2/users/me', {
+        headers: { Authorization: `Bearer ${access_token}` },
+        params: { 'user.fields': 'profile_image_url,public_metrics' }
+      });
+
+      const twitterUser = userRes.data?.data;
+      if (!twitterUser) throw new Error('Could not pull user identity stats from Twitter.');
+
+      await SocialAccount.findOneAndUpdate(
+        { userId, platform: 'twitter', accountId: twitterUser.id },
+        {
+          id:             uuidv4(),
+          userId,
+          platform:       'twitter',
+          accountName:    twitterUser.name || twitterUser.username,
+          accountId:      twitterUser.id,
+          profilePicture: twitterUser.profile_image_url || '',
+          followers:      twitterUser.public_metrics?.followers_count || 0,
+          accessToken:    encrypt(access_token),
+          refreshToken:   refresh_token ? encrypt(refresh_token) : undefined,
+          isActive:       true,
+          connectedAt:    new Date()
+        },
+        { upsert: true, new: true }
+      );
+
+      return sendPopupMessage(res, platform, true);
     }
 
-    if (platform === 'youtube') {
-      const { google } = require('googleapis');
-      const credentials = OAUTH_CREDENTIALS[platform];
-      const redirectUri = `${getBackendUrl()}/api/accounts/oauth/${platform}/callback`;
-
-      try {
-        // 1. Initialize OAuth client
-        const oauth2Client = new google.auth.OAuth2(
-          credentials.clientId,
-          credentials.clientSecret,
-          redirectUri
-        );
-
-        // 2. Exchange code for tokens (access_token & refresh_token)
-        const { tokens } = await oauth2Client.getToken(code);
-
-        // 3. Save via helper function
-        await saveYouTubeAccount(userId, tokens);
-
-        logger.info('🔗', `youtube connected via OAuth popup for user ${userId}`);
-        return sendPopupMessage(res, platform, true);
-        
-      } catch (saveErr) {
-        logger.error(`Save ${platform} failed`, saveErr.message);
-        return sendPopupMessage(res, platform, false, saveErr.message);
-      }
-    }
-
-    // ── Other platforms: log code, redirect (you can extend) ──
-    logger.info('🔗', `${platform} OAuth callback — code received for user ${userId}`);
+    logger.info('🔗', `${platform} OAuth callback code unhandled falling back`);
     return sendPopupMessage(res, platform, true);
 
   } catch (err) {
-    const errMsg = err.response?.data?.error?.message || err.message || 'OAuth failed';
-    logger.error(`OAuth callback failed for ${req.params.platform}`, errMsg);
+    const errMsg = err.response?.data?.error_description || err.response?.data?.error?.message || err.message || 'OAuth failed';
+    logger.error(`OAuth callback wrapper failure:`, errMsg);
     return sendPopupMessage(res, req.params.platform, false, errMsg);
   }
 });
 
-
 router.delete('/:accountId', authMiddleware, async (req, res) => {
   try {
-    const result = await SocialAccount.deleteOne({
-      id:     req.params.accountId,
-      userId: req.user.id
-    });
-
-    if (result.deletedCount === 0) {
-      return res.status(404).json({ detail: 'Account not found' });
-    }
-
-    logger.info('🔗', `Account ${req.params.accountId} disconnected`);
+    const result = await SocialAccount.deleteOne({ id: req.params.accountId, userId: req.user.id });
+    if (result.deletedCount === 0) return res.status(404).json({ detail: 'Account not found' });
     res.json({ message: 'Account disconnected successfully' });
   } catch (error) {
-    logger.error('Failed to disconnect account', error);
     res.status(500).json({ detail: 'Failed to disconnect account' });
   }
 });
 
-// ═════════════════════════════════════════════════════════════
-// Pages routes (unchanged)
-// ═════════════════════════════════════════════════════════════
-
 router.get('/:accountId/pages', authMiddleware, async (req, res) => {
   try {
-    const account = await SocialAccount.findOne({
-      id:     req.params.accountId,
-      userId: req.user.id
-    });
-
+    const account = await SocialAccount.findOne({ id: req.params.accountId, userId: req.user.id });
     if (!account) return res.status(404).json({ message: 'Account not found' });
-    if (account.platform !== 'facebook') {
-      return res.status(400).json({ message: 'Pages are only available for Facebook accounts' });
-    }
-
-    const pages = (account.pages || []).map(p => ({
-      pageId:     p.pageId,
-      pageName:   p.pageName,
-      category:   p.category,
-      isSelected: p.isSelected
-    }));
-
+    const pages = (account.pages || []).map(p => ({ pageId: p.pageId, pageName: p.pageName, category: p.category, isSelected: p.isSelected }));
     res.json({ pages });
-  } catch (error) {
-    logger.error('Failed to get pages', error);
-    res.status(500).json({ message: 'Failed to get pages' });
-  }
-});
-
-router.post('/:accountId/pages/:pageId/post', authMiddleware, async (req, res) => {
-  try {
-    const { message } = req.body;
-    if (!message || !message.trim()) {
-      return res.status(400).json({ message: 'Message is required' });
-    }
-
-    const account = await SocialAccount.findOne({
-      id:     req.params.accountId,
-      userId: req.user.id
-    });
-    if (!account) return res.status(404).json({ message: 'Account not found' });
-
-    const page = (account.pages || []).find(p => p.pageId === req.params.pageId);
-    if (!page) return res.status(404).json({ message: 'Page not found on this account' });
-
-    const pageAccessToken = decrypt(page.pageAccessToken);
-
-    const fbResponse = await axios.post(
-      `https://graph.facebook.com/v19.0/${page.pageId}/feed`,
-      { message: message.trim(), access_token: pageAccessToken }
-    );
-
-    logger.info('📘', `Posted to Facebook page ${page.pageName} — post ID: ${fbResponse.data.id}`);
-
-    res.json({
-      success:  true,
-      message:  'Posted to Facebook page successfully',
-      pageName: page.pageName,
-      pageId:   page.pageId,
-      fbPostId: fbResponse.data.id
-    });
-
-  } catch (error) {
-    const fbError = error.response?.data?.error?.message || error.message;
-    logger.error('Failed to post to Facebook page', fbError);
-    res.status(500).json({ message: 'Failed to post to Facebook page', error: fbError });
-  }
-});
-
-router.put('/:accountId/pages/:pageId/select', authMiddleware, async (req, res) => {
-  try {
-    const account = await SocialAccount.findOne({
-      id:     req.params.accountId,
-      userId: req.user.id
-    });
-
-    if (!account) return res.status(404).json({ message: 'Account not found' });
-
-    account.pages = (account.pages || []).map(p => ({
-      ...p.toObject(),
-      isSelected: p.pageId === req.params.pageId ? !p.isSelected : p.isSelected
-    }));
-
-    await account.save();
-
-    res.json({
-      success: true,
-      pages: account.pages.map(p => ({
-        pageId:     p.pageId,
-        pageName:   p.pageName,
-        isSelected: p.isSelected
-      }))
-    });
-  } catch (error) {
-    logger.error('Failed to update page selection', error);
-    res.status(500).json({ message: 'Failed to update page selection' });
-  }
-});
-
-// ── Legacy Instagram token route (kept for backward compat) ───
-router.post('/connect/instagram/token', async (req, res) => {
-  try {
-    const { accessToken } = req.body;
-
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ success: false, message: 'No token provided' });
-    }
-
-    const token = authHeader.split(' ')[1];
-    let userId;
-
-    try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      userId = decoded.user_id;
-    } catch (err) {
-      if (err.name === 'TokenExpiredError') {
-        return res.status(401).json({ success: false, message: 'Token expired — please login again' });
-      }
-      return res.status(401).json({ success: false, message: 'Invalid token' });
-    }
-
-    if (!accessToken) {
-      return res.status(400).json({ success: false, message: 'accessToken is required' });
-    }
-
-    try {
-      await axios.get('https://graph.facebook.com/me', {
-        params: { access_token: accessToken, fields: 'id' }
-      });
-    } catch {
-      return res.status(400).json({ success: false, message: 'Invalid or expired Facebook token' });
-    }
-
-    const saved = await saveInstagramAccount(userId, accessToken);
-
-    res.json({
-      success:     true,
-      message:     'Instagram connected successfully',
-      accountName: saved.accountName,
-      pages: (saved.pages || []).map(p => ({
-        pageId:   p.pageId,
-        pageName: p.pageName,
-        category: p.category
-      }))
-    });
-
-  } catch (err) {
-    if (err.message?.includes('No Instagram Business')) {
-      return res.status(400).json({ success: false, message: err.message });
-    }
-    logger.error('Instagram token connect failed', err.response?.data || err.message);
-    const fbCode = err.response?.data?.error?.code;
-    if (fbCode === 190) return res.status(400).json({ success: false, message: 'Token invalid or expired' });
-    if (fbCode === 200) return res.status(400).json({ success: false, message: 'Missing permissions' });
-    res.status(500).json({ success: false, message: 'Failed to connect Instagram account' });
-  }
-});
-
-router.delete('/disconnect/instagram/:accountId', authMiddleware, async (req, res) => {
-  try {
-    const { accountId } = req.params;
-    const userId        = req.user._id;
-
-    const account = await SocialAccount.findOneAndDelete({
-      _id:      accountId,
-      userId:   userId,
-      platform: 'instagram',
-    });
-
-    if (!account) {
-      return res.status(404).json({ success: false, message: 'Instagram account not found' });
-    }
-
-    return res.json({ success: true, message: 'Instagram disconnected successfully' });
-  } catch (err) {
-    console.error('Instagram disconnect error:', err);
-    return res.status(500).json({ success: false, message: 'Internal server error' });
-  }
+  } catch (error) { res.status(500).json({ message: 'Failed to get pages' }); }
 });
 
 module.exports = router;

@@ -16,6 +16,9 @@ import EditPost from './pages/EditPost';
 import Scheduler from './pages/Scheduler';
 import Inbox from './pages/Inbox';
 import Analytics from './pages/Analytics';
+import PrivacyPolicy from './pages/PrivacyPolicy';
+import TermsAndConditions from './pages/TermsCondition';
+// import Home from './pages/Home';
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
@@ -61,6 +64,9 @@ function AppRoutes() {
       {/* Public Routes */}
       <Route path="/login" element={<PublicRoute><Login /></PublicRoute>} />
       <Route path="/register" element={<PublicRoute><Register /></PublicRoute>} />
+      <Route path="/privacy-policy" element={<PublicRoute><PrivacyPolicy/></PublicRoute>} />
+      <Route path="/terms-condition" element={<PublicRoute><TermsAndConditions/></PublicRoute>} />
+      {/* <Route path="/" element={<PublicRoute><Home/></PublicRoute>}/> */}
 
       {/* Protected Routes */}
       <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />

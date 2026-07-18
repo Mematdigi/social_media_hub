@@ -7,12 +7,28 @@ export const usePosts = () => {
   const [syncing, setSyncing] = useState(false);
   const [error, setError]     = useState(null);
 
-  const fetchPosts = useCallback(async (status, platform) => {
+// 1. 🆕 Make sure this new state tracker is defined at the top of your hook file
+ const [pagination, setPagination] = useState(null);
+
+          // 2. 🔄 Update the fetch handler to parse unified object configurations
+// 🆕 Update to accept statusOrParams so it can read objects
+
+  const fetchPosts = useCallback(async (statusOrParams, platform) => {
     setLoading(true);
     setError(null);
     try {
-      const response = await postsAPI.getAll(status, platform);
-      setPosts(response.data);
+      const response = await postsAPI.getAll(statusOrParams, platform);
+      
+      // ✅ If the response is the paginated envelope object, extract the components
+      if (response.data && response.data.posts) {
+        setPosts(response.data.posts);
+        setPagination(response.data.pagination);
+      } else {
+        // Fallback array handling for legacy responses
+        setPosts(Array.isArray(response.data) ? response.data : []);
+        setPagination(null);
+      }
+      
       return response.data;
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to fetch posts');
@@ -22,6 +38,8 @@ export const usePosts = () => {
     }
   }, []);
 
+// 3. Make sure 'pagination' is included in your hook's return statement block!
+// return { posts, pagination, loading, error, fetchPosts, ... };
   const fetchPost = useCallback(async (postId) => {
     setLoading(true);
     setError(null);
@@ -128,6 +146,7 @@ export const usePosts = () => {
     loading,
     syncing,
     error,
+    pagination,
     fetchPosts,
     fetchPost,
     createPost,

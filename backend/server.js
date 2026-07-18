@@ -24,6 +24,7 @@ const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const { startScheduler } = require('./routes/scheduler'); // Add this import
 
 // Middleware
 app.use(helmet());

@@ -37,6 +37,9 @@
 @use 'inbox';
 @use 'scheduler';
 @use 'accounts';
+@use 'home.scss';
+@use 'termsCondition.scss';
+@use 'privacyPolicy.scss';
 
 // ── Tailwind ─────────────────────────────────────────────────
 @tailwind base;

@@ -20,7 +20,7 @@ const socialAccountSchema = new mongoose.Schema({
   profilePicture: { type: String, default: '' },
   accessToken:    { type: String, default: '' },
   refreshToken:   { type: String, default: '' },
-  tokenExpiry:    { type: Date },
+  tokenExpiry:    { type: Date, default:'' },
   isActive:       { type: Boolean, default: true },
   followers:      { type: Number, default: 0 },
   connectedAt:    { type: Date, default: Date.now },

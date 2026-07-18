@@ -158,8 +158,16 @@ initiateOAuth: async (platform) => {
 };
 // Posts API
 export const postsAPI = {
-  getAll:  (status, platform) => api.get('/posts', { params: { status, platform } }),
-  getOne:  (postId)           => api.get(`/posts/${postId}`),
+getAll: (statusOrParams, platform) => {
+    // If the first argument is our pagination configuration object, send it directly
+    if (typeof statusOrParams === 'object' && statusOrParams !== null) {
+      return api.get('/posts', { params: statusOrParams });
+    }
+    // Fallback support for any legacy calls across the application
+    return api.get('/posts', { params: { status: statusOrParams, platform } });
+  },  
+
+getOne:  (postId)           => api.get(`/posts/${postId}`),
   create:  (data)             => api.post('/posts', data),
   update:  (postId, data)     => api.put(`/posts/${postId}`, data),
   delete:  (postId, deleteFromPlatform = true) =>

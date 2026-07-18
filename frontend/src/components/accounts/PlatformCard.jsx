@@ -11,6 +11,7 @@ import {
 import { getPlatformConfig } from '../../utils/platformConfig';
 import { cn } from '../../lib/utils';
 import { accountsAPI } from '../../services/api';
+import { toast } from 'sonner';
 
 const API_URL   = process.env.REACT_APP_BACKEND_URL;
 const TOKEN_KEY = 'socialhub_token';
@@ -30,7 +31,6 @@ export const PlatformCard = ({
 
   const popupRef    = useRef(null);
   const intervalRef = useRef(null);
-  const handlerRef  = useRef(null);
 
   const config = getPlatformConfig(platform);
 
@@ -54,68 +54,25 @@ export const PlatformCard = ({
     } catch { return true; }
   };
 
-  useEffect(() => {
-    return () => {
-      clearInterval(intervalRef.current);
-      if (handlerRef.current) {
-        window.removeEventListener('message', handlerRef.current);
-      }
-    };
-  }, []);
+  // Note: The global message listener is now handled securely in Accounts.jsx
+  // to trigger refetchAccounts(), so we don't need duplicate listeners here 
+  // unless we are handling specific local state failures.
 
-  useEffect(() => {
-    // 1. Create the listener function
-    const handleMessage = (event) => {
-      // Check if the message is coming from our backend popup
-      if (event.data && event.data.source === 'socialhub_oauth') {
-        const { platform, success, message } = event.data;
-
-        if (success) {
-          // Show the success toast
-          toast.success(`${platform.charAt(0).toUpperCase() + platform.slice(1)} connected successfully!`);
-          
-          // Slight delay to let the toast appear, then refresh the page to update data
-          setTimeout(() => {
-            window.location.href = `/accounts?connected=${platform}`;
-          }, 1000);
-          
-        } else {
-          toast.error(`Failed to connect ${platform}: ${message}`);
-        }
-      }
-    };
-
-    // 2. Attach the listener to the browser
-    window.addEventListener('message', handleMessage);
-    handlerRef.current = handleMessage;
-
-    // 3. Cleanup when component unmounts
-    return () => {
-      clearInterval(intervalRef.current);
-      if (handlerRef.current) {
-        window.removeEventListener('message', handlerRef.current);
-      }
-    };
-  }, []); // Run once on mount
-  
   // ════════════════════════════════════════════════════════════
   // ✅ HARDCODED Facebook OAuth (Direct to Facebook)
   // ════════════════════════════════════════════════════════════
   const connectFacebookHardcoded = () => {
     setConnectError('');
-
     if (isTokenExpired()) {
       localStorage.removeItem(TOKEN_KEY);
       window.location.href = '/login';
       return;
     }
-
     const userId = getUserId();
     if (!userId) {
       setConnectError('You must be logged in.');
       return;
     }
-
     setConnecting(true);
 
     const FACEBOOK_CLIENT_ID = '1108979541367564';
@@ -132,36 +89,7 @@ export const PlatformCard = ({
       `&response_type=code` +
       `&auth_type=rerequest`;
 
-    console.log('🔗 Facebook OAuth URL:', facebookAuthUrl);
-
-    const w = 600;
-    const h = 720;
-    const left = (window.screen.width - w) / 2;
-    const top = (window.screen.height - h) / 2;
-
-    const popup = window.open(
-      facebookAuthUrl,
-      'facebook_oauth',
-      `width=${w},height=${h},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no`
-    );
-
-    if (!popup) {
-      console.error('❌ Popup blocked');
-      setConnecting(false);
-      setConnectError('Popup blocked. Please allow popups for this site and try again.');
-      return;
-    }
-
-    popupRef.current = popup;
-
-    const checkPopup = setInterval(() => {
-      if (popup.closed) {
-        clearInterval(checkPopup);
-        setConnecting(false);
-      }
-    }, 500);
-
-    intervalRef.current = checkPopup;
+    openPopupContainer(facebookAuthUrl, 'facebook_oauth');
   };
 
   // ════════════════════════════════════════════════════════════
@@ -169,19 +97,16 @@ export const PlatformCard = ({
   // ════════════════════════════════════════════════════════════
   const connectInstagramHardcoded = () => {
     setConnectError('');
-
     if (isTokenExpired()) {
       localStorage.removeItem(TOKEN_KEY);
       window.location.href = '/login';
       return;
     }
-
     const userId = getUserId();
     if (!userId) {
       setConnectError('You must be logged in.');
       return;
     }
-
     setConnecting(true);
 
     const FACEBOOK_CLIENT_ID = '1108979541367564';
@@ -198,16 +123,42 @@ export const PlatformCard = ({
       `&response_type=code` +
       `&auth_type=rerequest`;
 
-    console.log('🔗 Instagram OAuth URL:', instagramAuthUrl);
+    openPopupContainer(instagramAuthUrl, 'instagram_oauth');
+  };
 
+  // ════════════════════════════════════════════════════════════
+  // 🐦 Twitter (X) & 🎥 YouTube Dynamic OAuth Flow
+  // ════════════════════════════════════════════════════════════
+  const connectDynamicPopup = (platformName) => {
+    setConnectError('');
+    if (isTokenExpired()) {
+      localStorage.removeItem(TOKEN_KEY);
+      window.location.href = '/login';
+      return;
+    }
+    const userId = getUserId();
+    if (!userId) {
+      setConnectError('You must be logged in.');
+      return;
+    }
+    setConnecting(true);
+
+    const authUrl = `${API_URL}/api/accounts/oauth/${platformName}?user_id=${userId}`;
+    openPopupContainer(authUrl, `${platformName}_oauth`);
+  };
+
+  // ════════════════════════════════════════════════════════════
+  // Shared Layout Wrapper Tool
+  // ════════════════════════════════════════════════════════════
+  const openPopupContainer = (url, targetName) => {
     const w = 600;
     const h = 720;
     const left = (window.screen.width - w) / 2;
     const top = (window.screen.height - h) / 2;
 
     const popup = window.open(
-      instagramAuthUrl,
-      'instagram_oauth',
+      url,
+      targetName,
       `width=${w},height=${h},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no`
     );
 
@@ -219,31 +170,22 @@ export const PlatformCard = ({
     }
 
     popupRef.current = popup;
-
     const checkPopup = setInterval(() => {
       if (popup.closed) {
         clearInterval(checkPopup);
-        setConnecting(false);
+        setConnecting(false); // Reset button state when popup closes
       }
     }, 500);
-
     intervalRef.current = checkPopup;
   };
 
-  // ════════════════════════════════════════════════════════════
-  // Other platforms - Backend redirect
-  // ════════════════════════════════════════════════════════════
   const connectThreadsPopup = () => {
     setConnectError('');
     setConnecting(true);
 
     accountsAPI.initiateOAuth('threads')
       .then(() => {
-        if (onConnected) {
-          onConnected('threads');
-        } else {
-          window.location.href = '/accounts?connected=threads';
-        }
+        if (onConnected) onConnected('threads');
       })
       .catch((err) => {
         setConnectError(err.message || 'Failed to connect Threads');
@@ -265,8 +207,6 @@ export const PlatformCard = ({
       setConnectError('You must be logged in.');
       return;
     }
-    // This will redirect the user to your backend to start the OAuth flow (e.g. YouTube)
-    // When the backend callback finishes, it automatically redirects back to /accounts
     window.location.href = `${API_URL}/api/accounts/oauth/${platform}?user_id=${userId}`;
   };
 
@@ -280,29 +220,29 @@ export const PlatformCard = ({
       connectInstagramHardcoded();
     } else if (platform === 'threads') {
       connectThreadsPopup();
+    } else if (platform === 'twitter' || platform === 'x' || platform === 'youtube') {
+      connectDynamicPopup(platform);
     } else {
-      // Handles YouTube (and any other standard OAuth platform)
       connectOAuth(); 
     }
   };
 
- const handleDisconnect = async () => {
+  // 🚀 CRITICAL FIX: Ensure disconnect uses the unique account ID
+  const handleDisconnect = async () => {
     if (!account) return;
     setDisconnecting(true);
     try {
-      // ✅ Fallback to account._id for YouTube/MongoDB raw documents
       const targetId = account.id || account._id; 
-      
       if (!targetId) {
-        console.error("No account ID found to disconnect:", account);
+        toast.error("Cannot disconnect: Account ID missing.");
         setConnectError("Cannot disconnect: Account ID missing.");
         return;
       }
-
       await onDisconnect(targetId);
-      
+      toast.success(`${account.accountName || config.name} disconnected successfully.`);
     } catch (error) {
       console.error("Disconnect error:", error);
+      toast.error("Failed to disconnect account.");
     } finally {
       setDisconnecting(false);
       setShowDisconnectDialog(false);
@@ -322,7 +262,7 @@ export const PlatformCard = ({
         data-testid={`platform-card-${platform}`}
         whileHover={{ y: -4 }}
         className={cn(
-          'bg-white rounded-3xl border-2 p-5 transition-all duration-200',
+          'bg-white rounded-3xl border-2 p-5 transition-all duration-200 h-full flex flex-col',
           'shadow-card hover:shadow-card-hover',
           connected
             ? 'border-green-200'
@@ -348,66 +288,78 @@ export const PlatformCard = ({
         </h3>
 
         {connected && account ? (
-          <>
+          <div className="flex flex-col flex-grow">
             <div className="flex items-center gap-2 mb-3">
               <img
                 src={account.profilePicture || account.avatarUrl}
                 alt={account.accountName || account.name}
-                className="w-6 h-6 rounded-full object-cover"
+                className="w-6 h-6 rounded-full object-cover shrink-0"
                 onError={(e) => {
                   e.target.src = `https://api.dicebear.com/7.x/initials/svg?seed=${platform}`;
                 }}
               />
-              <span className="text-sm text-slate-600 truncate">
+              <span className="text-sm text-slate-600 truncate font-medium">
                 {account.accountName || account.name}
               </span>
             </div>
 
             <div className="flex items-center gap-1 text-sm text-slate-500 mb-4">
-              <Users className="w-4 h-4" />
+              <Users className="w-4 h-4 shrink-0" />
               <span>{formatFollowers(account.followers)} followers</span>
             </div>
 
-            {platform === 'facebook' && account.pages?.length > 0 && (
-              <div className="text-xs text-slate-400 mb-3">
-                📄 {account.pages.length} page{account.pages.length > 1 ? 's' : ''} connected
-              </div>
-            )}
-            {platform === 'instagram' && account.igUsername && (
-              <div className="text-xs text-slate-400 mb-3">
-                📷 @{account.igUsername}
-              </div>
-            )}
-            {platform === 'threads' && account.accountName && (
-              <div className="text-xs text-slate-400 mb-3">
-                🧵 @{account.accountName}
-              </div>
-            )}
-
+            <div className="flex-grow">
+              {platform === 'facebook' && account.pages?.length > 0 && (
+                <div className="text-xs text-slate-400 mb-3">
+                  📄 {account.pages.length} page{account.pages.length > 1 ? 's' : ''} connected
+                </div>
+              )}
+              {platform === 'instagram' && account.igUsername && (
+                <div className="text-xs text-slate-400 mb-3 truncate">
+                  📷 @{account.igUsername}
+                </div>
+              )}
+              {platform === 'threads' && account.accountName && (
+                <div className="text-xs text-slate-400 mb-3 truncate">
+                  🧵 @{account.accountName}
+                </div>
+              )}
+              {(platform === 'twitter' || platform === 'x') && (account.username || account.accountName) && (
+                <div className="text-xs text-slate-400 mb-3 truncate">
+                  🐦 @{account.username || account.accountName}
+                </div>
+              )}
+              {platform === 'youtube' && (account.accountName || account.name) && (
+                <div className="text-xs text-slate-400 mb-3 truncate" title={account.accountName || account.name}>
+                  📺 {account.accountName || account.name}
+                </div>
+              )}
+            </div>
+            
             <Button
               data-testid={`disconnect-${platform}`}
               variant="outline"
               size="sm"
-              className="w-full rounded-full hover:bg-red-50 hover:text-red-600 hover:border-red-200"
+              className="w-full mt-auto rounded-full hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-colors"
               onClick={() => setShowDisconnectDialog(true)}
             >
               <X className="w-4 h-4 mr-2" />
               Disconnect
             </Button>
-          </>
+          </div>
         ) : oauthSupported ? (
-          <>
+          <div className="mt-auto pt-4">
             {connectError && (
-              <div className="flex items-center gap-1 text-xs text-red-500 mt-2 mb-1">
-                <AlertCircle className="w-3 h-3 flex-shrink-0" />
-                <span>{connectError}</span>
+              <div className="flex items-start gap-1 text-xs text-red-500 mb-2 bg-red-50 p-2 rounded-md">
+                <AlertCircle className="w-3 h-3 mt-0.5 shrink-0" />
+                <span className="leading-tight">{connectError}</span>
               </div>
             )}
             <Button
               type="button"
               data-testid={`connect-${platform}`}
               disabled={connecting}
-              className="w-full mt-4 rounded-full bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white shadow-button disabled:opacity-60"
+              className="w-full rounded-full bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white shadow-button disabled:opacity-60"
               onClick={handleConnect}
             >
               {connecting ? (
@@ -416,11 +368,13 @@ export const PlatformCard = ({
                 <><ExternalLink className="w-4 h-4 mr-2" />Connect</>
               )}
             </Button>
-          </>
+          </div>
         ) : (
-          <p className="text-sm text-slate-400 mt-2">
-            OAuth integration coming soon
-          </p>
+          <div className="mt-auto pt-4">
+            <p className="text-sm text-slate-400">
+              OAuth integration coming soon
+            </p>
+          </div>
         )}
       </motion.div>
 
@@ -428,10 +382,10 @@ export const PlatformCard = ({
         <AlertDialogContent className="rounded-3xl">
           <AlertDialogHeader>
             <AlertDialogTitle className="font-heading">
-              Disconnect {config.name}?
+              Disconnect {account?.accountName || config.name}?
             </AlertDialogTitle>
             <AlertDialogDescription>
-              This will remove your {config.name} account from SocialHub. You can reconnect it anytime.
+              This will remove this specific account from SocialHub. You can reconnect it anytime.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -439,9 +393,9 @@ export const PlatformCard = ({
             <AlertDialogAction
               onClick={handleDisconnect}
               disabled={disconnecting}
-              className="rounded-full bg-red-500 hover:bg-red-600"
+              className="rounded-full bg-red-500 hover:bg-red-600 text-white"
             >
-              {disconnecting ? 'Disconnecting...' : 'Disconnect'}
+              {disconnecting ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Disconnecting...</> : 'Disconnect'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

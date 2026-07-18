@@ -19,21 +19,27 @@ export default function AddPost() {
     // 1. Detect if this is a heavy video/YouTube upload
     let isVideoUpload = false;
     
-    // Check if formData is a native FormData object (used for file uploads)
     if (formData instanceof FormData) {
-      // Assuming your PostForm appends files to a 'media' or 'files' key
+      // Fallback fallback case if native multi-part FormData is used
       const files = formData.getAll('media').length ? formData.getAll('media') : formData.getAll('files');
       isVideoUpload = files.some(file => file.type && file.type.startsWith('video/'));
       
-      // Also check if YouTube is explicitly selected
       const platforms = formData.getAll('platforms');
       if (platforms.includes('youtube')) isVideoUpload = true;
+    } else if (formData) {
+      // ✅ Handle the plain JSON object format submitted by your PostForm
+      const hasVideoFile = formData.mediaUrls?.some(url => url.match(/\.(mp4|mov|webm|ogg)$/i));
+      const hasYoutubeTitle = !!formData.youtubeTitle;
+      
+      if (hasVideoFile || hasYoutubeTitle) {
+        isVideoUpload = true;
+      }
     }
 
     // 2. Show a persistent loading toast for long uploads
     if (isVideoUpload) {
-      toast.loading('Uploading video... This may take a few moments depending on file size.', { 
-        id: 'upload-toast' // Give it an ID so we can dismiss it later
+      toast.loading('Uploading video content... This may take a few moments depending on file size.', { 
+        id: 'upload-toast' 
       });
     }
 

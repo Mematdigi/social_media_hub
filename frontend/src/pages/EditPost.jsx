@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react'; // ✅ Cleansed spacing here
 import { useNavigate, useParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { ArrowLeft, Edit3, RefreshCw, AlertTriangle, Camera, ExternalLink } from 'lucide-react';
+import { ArrowLeft, Edit3, RefreshCw, AlertTriangle, Camera, ExternalLink, Youtube } from 'lucide-react';
 import { PageWrapper } from '../components/layout/PageWrapper';
 import { PostForm } from '../components/posts/PostForm';
 import { PageLoader } from '../components/common/Loader';
@@ -41,19 +41,22 @@ export default function EditPost() {
   // ── Derived platform flags ─────────────────────────────────────────────────
   const isFacebook  = post?.platforms?.includes('facebook');
   const isInstagram = post?.platforms?.includes('instagram');
+  const isYoutube   = post?.platforms?.includes('youtube'); 
   const isBoth      = isFacebook && isInstagram;
   const isSynced    = post?.syncedFromPlatform;
   const isPublished = post?.status === 'published';
 
   // ── Is Instagram-only published post ──────────────────────────────────────
-  const isInstagramOnly = isPublished && isInstagram && !isFacebook;
+  const isInstagramOnly = isPublished && isInstagram && !isFacebook && !isYoutube;
 
-  // ── Platform label ─────────────────────────────────────────────────────────
-  const platformLabel = isBoth
-    ? 'Facebook & Instagram'
-    : isInstagram
-    ? 'Instagram'
-    : 'Facebook';
+  // ── Dynamic Platform label constructor ─────────────────────────────────────
+  const platformLabel = useMemo(() => {
+    const active = [];
+    if (isFacebook) active.push('Facebook');
+    if (isInstagram) active.push('Instagram');
+    if (isYoutube) active.push('YouTube');
+    return active.join(' & ');
+  }, [isFacebook, isInstagram, isYoutube]);
 
   // ── Redirect to Meta Business Suite ───────────────────────────────────────
   const openMetaBusinessSuite = () => {
@@ -61,34 +64,38 @@ export default function EditPost() {
     window.open(META_INSTAGRAM_POSTS_URL, '_blank');
   };
 
-  // ── Success toast ──────────────────────────────────────────────────────────
+  // ── Success toast messaging ────────────────────────────────────────────────
   const getSuccessMessage = () => {
-    if (post?.status !== 'published') return 'Post updated successfully!';
-    if (isBoth) return 'Post updated — changes saved to Facebook & Instagram!';
-    return 'Post updated — changes saved to Facebook too!';
+    if (post?.status !== 'published') return 'Post update saved successfully!';
+    return `Post updated — changes successfully sent to ${platformLabel}!`;
   };
 
   // ── Submit handler ─────────────────────────────────────────────────────────
   const handleSubmit = async (formData) => {
-    // ✅ Instagram-only published post — redirect to Meta Business Suite
     if (isInstagramOnly) {
       openMetaBusinessSuite();
       return;
     }
 
     setSaving(true);
+    
+    if (isYoutube) {
+      toast.loading('Updating your video configuration on YouTube...', { id: 'edit-post-toast' });
+    }
+
     try {
       await updatePost(id, formData);
+      if (isYoutube) toast.dismiss('edit-post-toast');
       toast.success(getSuccessMessage());
       navigate('/posts');
     } catch (error) {
+      if (isYoutube) toast.dismiss('edit-post-toast');
       toast.error(error.response?.data?.detail || 'Failed to update post');
     } finally {
       setSaving(false);
     }
   };
 
-  // ── Loading ────────────────────────────────────────────────────────────────
   if (loading) {
     return (
       <PageWrapper>
@@ -97,7 +104,6 @@ export default function EditPost() {
     );
   }
 
-  // ── Not found ──────────────────────────────────────────────────────────────
   if (notFound) {
     return (
       <PageWrapper>
@@ -176,7 +182,17 @@ export default function EditPost() {
           </div>
         )}
 
-        {/* ── Banner: synced from both ───────────────────────────────────── */}
+        {/* ── Banner: synced from YouTube ───────────────────────────────── */}
+        {isSynced && isYoutube && (
+          <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-red-50 border border-red-200">
+            <Youtube className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+            <p className="text-sm text-red-700">
+              This video was synced from YouTube. Edits here will apply to your live channel video settings.
+            </p>
+          </div>
+        )}
+
+        {/* ── Banner: synced from multi-platforms ────────────────────────── */}
         {isSynced && isBoth && (
           <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-purple-50 border border-purple-200">
             <RefreshCw className="w-4 h-4 text-purple-500 flex-shrink-0 mt-0.5" />
@@ -196,7 +212,17 @@ export default function EditPost() {
           </div>
         )}
 
-        {/* ── Banner: Instagram-only — Meta Business Suite redirect ─────── */}
+        {/* ── Banner: live YouTube post warning ─────────────────────────── */}
+        {isPublished && !isSynced && isYoutube && (
+          <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-amber-50 border border-amber-200">
+            <AlertTriangle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+            <p className="text-sm text-amber-700">
+              This video is live on YouTube. Modifying settings will update your live thumbnail parameters, categories, and titles.
+            </p>
+          </div>
+        )}
+
+        {/* ── Banner: Instagram-only ────────────────────────────────────── */}
         {isInstagramOnly && (
           <div className="flex items-start gap-3 px-4 py-3 rounded-xl bg-pink-50 border border-pink-200">
             <ExternalLink className="w-4 h-4 text-pink-500 flex-shrink-0 mt-0.5" />
@@ -210,7 +236,6 @@ export default function EditPost() {
               <p className="text-xs text-pink-400 mt-1">
                 ⚠️ Only captions can be edited. Images and videos cannot be changed.
               </p>
-              {/* ── Direct button inside banner ── */}
               <button
                 onClick={openMetaBusinessSuite}
                 className="mt-3 inline-flex items-center gap-2 px-4 py-2 rounded-full bg-pink-600 hover:bg-pink-700 text-white text-xs font-medium transition-colors"
@@ -237,18 +262,18 @@ export default function EditPost() {
           </div>
         )}
 
-        {/* ── Form — hidden for Instagram-only published posts ──────────── */}
+        {/* ── Form Block ────────────────────────────────────────────────── */}
         {!isInstagramOnly && (
           <div className="bg-white rounded-3xl border border-slate-100 p-6 md:p-8 shadow-card">
             <PostForm
-              initialData={post}
+              initialPost={post}
               onSubmit={handleSubmit}
               loading={saving}
             />
           </div>
         )}
 
-        {/* ── Instagram-only: show only redirect card, no form ─────────── */}
+        {/* ── Instagram Redirect Fallback ────────────────────────────────── */}
         {isInstagramOnly && (
           <div className="bg-white rounded-3xl border border-slate-100 p-8 shadow-card text-center">
             <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-pink-500 to-rose-500 flex items-center justify-center mx-auto mb-4">
@@ -261,11 +286,7 @@ export default function EditPost() {
               Instagram does not allow post edits via third-party apps. You can edit your caption directly on Meta Business Suite.
             </p>
             <div className="flex gap-3 justify-center">
-              <Button
-                variant="outline"
-                className="rounded-full"
-                onClick={() => navigate('/posts')}
-              >
+              <Button variant="outline" className="rounded-full" onClick={() => navigate('/posts')}>
                 <ArrowLeft className="w-4 h-4 mr-2" />
                 Back to Posts
               </Button>
