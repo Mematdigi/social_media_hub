@@ -109,22 +109,51 @@ export default function Accounts() {
           if (platform.connected && Array.isArray(platform.accounts) && platform.accounts.length > 0) {
             return (
               <React.Fragment key={`group-${platform.platform}`}>
-                {platform.accounts.map((singleAccount, accIndex) => (
-                  <motion.div
-                    key={`acc-${singleAccount.id || singleAccount._id || accIndex}`}
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.05 * index }}
-                  >
-                    <PlatformCard
-                      platform={platform.platform}
-                      connected={true}
-                      account={singleAccount}
-                      oauthSupported={platform.oauthSupported}
-                      onDisconnect={disconnectAccount}
-                    />
-                  </motion.div>
-                ))}
+                {platform.accounts.map((singleAccount, accIndex) => {
+                  
+                  // ✨ NEW: Break out Facebook nested pages into individual cards
+                  if (platform.platform === 'facebook' && singleAccount.pages && singleAccount.pages.length > 0) {
+                    return singleAccount.pages.map((page, pageIndex) => (
+                      <motion.div
+                        key={`fb-page-${page.pageId || pageIndex}`}
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.05 * index }}
+                      >
+                        <PlatformCard
+                          platform={platform.platform}
+                          connected={true}
+                          account={{
+                            ...singleAccount, // Keep parent data (like profilePicture)
+                            accountName: page.pageName, // Override with specific Page Name
+                            accountId: page.pageId,     // Override with specific Page ID
+                            category: page.category     // Pass the category
+                          }}
+                          oauthSupported={platform.oauthSupported}
+                          onDisconnect={() => disconnectAccount(page.pageId)} // Ensure disconnect targets the specific page
+                        />
+                      </motion.div>
+                    ));
+                  }
+
+                  // Existing logic for Instagram/YouTube
+                  return (
+                    <motion.div
+                      key={`acc-${singleAccount.id || singleAccount._id || accIndex}`}
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.05 * index }}
+                    >
+                      <PlatformCard
+                        platform={platform.platform}
+                        connected={true}
+                        account={singleAccount}
+                        oauthSupported={platform.oauthSupported}
+                        onDisconnect={disconnectAccount}
+                      />
+                    </motion.div>
+                  );
+                })}
                 
                 {/* ➕ "ADD ANOTHER" ACCORDION CARD BUTTON SLOTS */}
                 {(platform.platform === 'youtube' || platform.platform === 'twitter' || platform.platform === 'x' || platform.platform === 'facebook' || platform.platform === 'instagram') && (

@@ -1,11 +1,28 @@
-const { decrypt, encrypt } = require('../utils/encryption'); // ✅ ADDED encryptconst logger      = require('../utils/logger');
-const { google }  = require('googleapis');
-const axios       = require('axios'); // ✅ FIXED: Added missing axios package import
-const fs          = require('fs');
-const path        = require('path');
-const logger = require('../utils/logger')
+const { decrypt, encrypt } = require('../utils/encryption'); 
+const logger = require('../utils/logger');
+const { google } = require('googleapis');
+const axios = require('axios'); 
+const fs = require('fs');
+const path = require('path');
+const SocialAccount = require('../models/SocialAccount'); 
 
-const SocialAccount = require('../models/SocialAccount'); // ✅ Added
+// 🌟 NEW: Add Exponential Backoff Retry Helper
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function withRetry(operation, maxRetries = 3, baseDelayMs = 2000) {
+  let attempt = 0;
+  while (attempt < maxRetries) {
+    try {
+      return await operation();
+    } catch (error) {
+      attempt++;
+      if (attempt >= maxRetries) throw error;
+      const delay = baseDelayMs * Math.pow(2, attempt - 1);
+      logger.warn(`⚠️ Network/API issue. Retrying in ${delay}ms... (Attempt ${attempt}/${maxRetries})`);
+      await sleep(delay);
+    }
+  }
+}
 
 // ═══════════════════════════════════════════════════════════════
 // AUTO-REFRESH YOUTUBE CLIENT
@@ -15,7 +32,6 @@ const getAuthenticatedYouTubeClient = async (account) => {
     throw new Error('No refresh token found. Please re-connect YouTube in your dashboard.');
   }
 
-  // Initialize the OAuth2 client using the correct environment variables
   const oauth2Client = new google.auth.OAuth2(
     process.env.YOUTUBE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID,
     process.env.YOUTUBE_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET,
@@ -25,14 +41,12 @@ const getAuthenticatedYouTubeClient = async (account) => {
   const decryptedAccessToken = decrypt(account.accessToken);
   const decryptedRefreshToken = decrypt(account.refreshToken);
 
-  // Set initial credentials
   oauth2Client.setCredentials({
     access_token: decryptedAccessToken,
     refresh_token: decryptedRefreshToken,
     expiry_date: account.tokenExpiry ? new Date(account.tokenExpiry).getTime() : 1
   });
 
-  // ─── CRITICAL SEAMLESS REFRESH EVENT LISTENER ───
   oauth2Client.on('tokens', async (tokens) => {
     try {
       const updateData = {};
@@ -43,7 +57,6 @@ const getAuthenticatedYouTubeClient = async (account) => {
       }
       
       if (tokens.expiry_date) {
-        // ✅ FIX 1: Use tokenExpiry and convert to Date object for Mongoose
         updateData.tokenExpiry = new Date(tokens.expiry_date);
       }
 
@@ -60,10 +73,8 @@ const getAuthenticatedYouTubeClient = async (account) => {
   });
 
   try {
-    // Force validation/refresh check before returning the client
-    const tokenInfo = await oauth2Client.getAccessToken();
+    const tokenInfo = await withRetry(() => oauth2Client.getAccessToken());
     
-    // Manual fallback persistence check
     if (tokenInfo.token && tokenInfo.token !== decryptedAccessToken) {
       logger.info('▶️', `Token verified as changed. Manually updating access token in DB for ${account.accountName || account.id}`);
       
@@ -71,7 +82,6 @@ const getAuthenticatedYouTubeClient = async (account) => {
         { id: account.id },
         { 
           accessToken: encrypt(tokenInfo.token),
-          // ✅ FIX 2: Use tokenExpiry and convert to Date object
           tokenExpiry: oauth2Client.credentials.expiry_date ? new Date(oauth2Client.credentials.expiry_date) : new Date(Date.now() + 3500000) 
         }
       );
@@ -89,13 +99,8 @@ const getAuthenticatedYouTubeClient = async (account) => {
 // PLATFORM PUBLISHERS
 // ═══════════════════════════════════════════════════════════════
 
-
 const publishers = {
-
-  // ─── Facebook (LOCAL DISK BUFFER FOR MASSIVE FILES) ──────────
-  // ─── Facebook (LOCAL DISK BUFFER FOR MASSIVE FILES) ──────────
-// ─── Facebook (LOCAL DISK BUFFER + FORCED CONTENT-LENGTH) ──────────
-// ─── Facebook (RESUMABLE CHUNKED UPLOAD API) ──────────
+  // ─── Facebook (BULLETPROOF RESUMABLE CHUNKED UPLOAD) ──────────
   facebook: async ({ pageToken, pageId, content, mediaUrls, mediaType }) => {
     const isVideo = mediaType === 'video' || (mediaUrls?.[0] && /\.(mp4|mov|avi|mkv)/i.test(mediaUrls[0]));
 
@@ -108,14 +113,13 @@ const publishers = {
         const filename = `temp_fb_${Date.now()}.mp4`;
         tempFilePath = path.join(__dirname, '../uploads', filename);
 
-        logger.info('🎬', `Downloading 183MB+ video to local disk buffer...`);
+        logger.info('🎬', `Downloading massive video to local disk buffer...`);
 
-        // 1. Download the file to the hard drive
-        const response = await axios({
+        const response = await withRetry(() => axios({
           url: videoUrl,
           method: 'GET',
           responseType: 'stream'
-        });
+        }));
 
         const writer = fs.createWriteStream(tempFilePath);
         response.data.pipe(writer);
@@ -128,16 +132,14 @@ const publishers = {
         const fileSize = fs.statSync(tempFilePath).size;
         logger.info('🎬', `Download complete. Exact size: ${fileSize} bytes. Starting Resumable Upload...`);
 
-        // ══════════════════════════════════════════════════════════
-        // PHASE 1: START (Initialize the upload session)
-        // ══════════════════════════════════════════════════════════
-        const startRes = await axios.post(`https://graph-video.facebook.com/v19.0/${pageId}/videos`, null, {
+        // PHASE 1: START
+        const startRes = await withRetry(() => axios.post(`https://graph-video.facebook.com/v19.0/${pageId}/videos`, null, {
           params: {
             access_token: pageToken,
             upload_phase: 'start',
             file_size: fileSize
           }
-        });
+        }));
 
         const sessionId = startRes.data.upload_session_id;
         const videoId = startRes.data.video_id;
@@ -146,56 +148,53 @@ const publishers = {
 
         logger.info('🎬', `Session initialized. Video ID: ${videoId}`);
 
-        // ══════════════════════════════════════════════════════════
-        // PHASE 2: TRANSFER (Upload in chunks)
-        // ══════════════════════════════════════════════════════════
+        // PHASE 2: TRANSFER
         const FormData = require('form-data');
 
         while (startOffset < fileSize) {
           logger.info('🎬', `Uploading chunk: bytes ${startOffset} to ${endOffset}...`);
           
-          // Slice the file exactly as Facebook requests
-          // Note: createReadStream 'end' is inclusive, so we do endOffset - 1
-          const chunkStream = fs.createReadStream(tempFilePath, {
-            start: startOffset,
-            end: endOffset - 1 
+          // ✅ BULLETPROOF FIX: The stream is created INSIDE the retry wrapper. 
+          // If a chunk fails midway, it recreates the stream for this exact byte range and tries again!
+          const transferRes = await withRetry(async () => {
+            const chunkStream = fs.createReadStream(tempFilePath, {
+              start: startOffset,
+              end: endOffset - 1 
+            });
+
+            const chunkForm = new FormData();
+            chunkForm.append('access_token', pageToken);
+            chunkForm.append('upload_phase', 'transfer');
+            chunkForm.append('upload_session_id', sessionId);
+            chunkForm.append('start_offset', startOffset.toString());
+            chunkForm.append('video_file_chunk', chunkStream, { filename: 'chunk.mp4' });
+
+            return await axios.post(
+              `https://graph-video.facebook.com/v19.0/${pageId}/videos`, 
+              chunkForm,
+              {
+                headers: chunkForm.getHeaders(),
+                maxBodyLength: Infinity,
+                maxContentLength: Infinity
+              }
+            );
           });
 
-          const chunkForm = new FormData();
-          chunkForm.append('access_token', pageToken);
-          chunkForm.append('upload_phase', 'transfer');
-          chunkForm.append('upload_session_id', sessionId);
-          chunkForm.append('start_offset', startOffset.toString());
-          chunkForm.append('video_file_chunk', chunkStream, { filename: 'chunk.mp4' });
-
-          const transferRes = await axios.post(
-            `https://graph-video.facebook.com/v19.0/${pageId}/videos`, 
-            chunkForm,
-            {
-              headers: chunkForm.getHeaders(),
-              maxBodyLength: Infinity,
-              maxContentLength: Infinity
-            }
-          );
-
-          // Update offsets for the next loop based on Facebook's response
           startOffset = parseInt(transferRes.data.start_offset, 10);
           endOffset = parseInt(transferRes.data.end_offset, 10);
         }
 
-        // ══════════════════════════════════════════════════════════
-        // PHASE 3: FINISH (Publish the video with content)
-        // ══════════════════════════════════════════════════════════
+        // PHASE 3: FINISH
         logger.info('🎬', `All chunks uploaded. Finalizing and publishing...`);
         
-        await axios.post(`https://graph-video.facebook.com/v19.0/${pageId}/videos`, null, {
+        await withRetry(() => axios.post(`https://graph-video.facebook.com/v19.0/${pageId}/videos`, null, {
           params: {
             access_token: pageToken,
             upload_phase: 'finish',
             upload_session_id: sessionId,
-            description: content || '' // Attach your text content here!
+            description: content || '' 
           }
-        });
+        }));
 
         logger.info('🎬', `✅ Massive Facebook video published successfully! ID: ${videoId}`);
         return { postId: videoId };
@@ -205,7 +204,6 @@ const publishers = {
         logger.error('🎬', `Facebook Error Details: ${JSON.stringify(error.response?.data || error.message)}`);
         throw new Error(`Facebook Chunked Upload Failed: ${fbError}`);
       } finally {
-        // ALWAYS clean up the temporary file
         if (tempFilePath && fs.existsSync(tempFilePath)) {
           fs.unlinkSync(tempFilePath);
           logger.info('🎬', `Cleaned up temporary disk buffer file.`);
@@ -222,20 +220,20 @@ const publishers = {
         params.append('link', mediaUrls[0]);
       }
 
-      const res = await fetch(`https://graph.facebook.com/v19.0/${pageId}/feed`, {
-        method: 'POST',
-        body: params,
+      const data = await withRetry(async () => {
+        const res = await fetch(`https://graph.facebook.com/v19.0/${pageId}/feed`, {
+          method: 'POST',
+          body: params,
+        });
+        return await res.json();
       });
-      
-      const data = await res.json();
       
       if (data.error) throw new Error(`Facebook Feed: ${data.error.message}`);
       return { postId: data.id };
     }
-  }
-  ,
+  },
 
-  // ─── Instagram ───────────────────────────────────────────────
+  // ─── Instagram (LONG VIDEO OPTIMIZED) ─────────────────────────
   instagram: async ({ pageToken, igAccountId, content, mediaUrls, mediaType }) => {
     const urls     = (mediaUrls || []).filter(u => u?.trim());
     const postType = mediaType || detectIGMediaType(urls);
@@ -245,48 +243,76 @@ const publishers = {
     if (postType === 'CAROUSEL') {
       const itemIds = [];
       for (const url of urls) {
-        const itemRes  = await fetch(`https://graph.facebook.com/v19.0/${igAccountId}/media`, {
-          method:  'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ image_url: url, is_carousel_item: true, access_token: pageToken }),
+        const itemData = await withRetry(async () => {
+          const itemRes = await fetch(`https://graph.facebook.com/v19.0/${igAccountId}/media`, {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ image_url: url, is_carousel_item: true, access_token: pageToken }),
+          });
+          return await itemRes.json();
         });
-        const itemData = await itemRes.json();
+        
         if (itemData.error) throw new Error(`Instagram carousel item: ${itemData.error.message}`);
         itemIds.push(itemData.id);
       }
 
-      const carouselRes  = await fetch(`https://graph.facebook.com/v19.0/${igAccountId}/media`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ media_type: 'CAROUSEL', children: itemIds.join(','), caption: content, access_token: pageToken }),
+      const carouselData = await withRetry(async () => {
+        const carouselRes = await fetch(`https://graph.facebook.com/v19.0/${igAccountId}/media`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ media_type: 'CAROUSEL', children: itemIds.join(','), caption: content, access_token: pageToken }),
+        });
+        return await carouselRes.json();
       });
-      const carouselData = await carouselRes.json();
+      
       if (carouselData.error) throw new Error(`Instagram carousel container: ${carouselData.error.message}`);
       return await publishIGContainer(igAccountId, carouselData.id, pageToken);
     }
 
     if (postType === 'REELS') {
       const safeUrl = encodeURI(urls[0]);
-      const containerRes = await fetch(`https://graph.facebook.com/v19.0/${igAccountId}/media`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ media_type: 'REELS', video_url: safeUrl, caption: content, access_token: pageToken }),
+      
+      // ✅ PRE-CHECK: Validate video size against Instagram's 1GB limit via HTTP HEAD
+      try {
+        const headRes = await axios.head(safeUrl);
+        const contentLength = parseInt(headRes.headers['content-length'], 10);
+        const IG_MAX_SIZE = 1024 * 1024 * 1024; // 1 GB
+        
+        if (contentLength && contentLength > IG_MAX_SIZE) {
+          throw new Error(`Video is too large for Instagram (${(contentLength / (1024 * 1024)).toFixed(2)}MB). Limit is 1GB.`);
+        }
+      } catch (headErr) {
+        if (headErr.message.includes('too large')) throw headErr;
+        logger.warn(`Could not perform IG size pre-check: ${headErr.message}`);
+      }
+      
+      const containerData = await withRetry(async () => {
+        const containerRes = await fetch(`https://graph.facebook.com/v19.0/${igAccountId}/media`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ media_type: 'REELS', video_url: safeUrl, caption: content, access_token: pageToken }),
+        });
+        return await containerRes.json();
       });
-      const containerData = await containerRes.json();
+      
       if (containerData.error) throw new Error(`Instagram reel container: ${containerData.error.message}`);
       if (!containerData.id)   throw new Error(`Instagram reel: No container ID. Response: ${JSON.stringify(containerData)}`);
 
-      await waitForMediaProcessing(containerData.id, pageToken);
+      // ✅ BULLETPROOF FIX: Increased maxAttempts to 90 (Wait up to 15 minutes for long videos)
+      await waitForMediaProcessing(containerData.id, pageToken, 90);
       return await publishIGContainer(igAccountId, containerData.id, pageToken);
     }
 
     if (postType === 'IMAGE') {
-      const containerRes = await fetch(`https://graph.facebook.com/v19.0/${igAccountId}/media`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ image_url: urls[0], caption: content, access_token: pageToken }),
+      const containerData = await withRetry(async () => {
+        const containerRes = await fetch(`https://graph.facebook.com/v19.0/${igAccountId}/media`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ image_url: urls[0], caption: content, access_token: pageToken }),
+        });
+        return await containerRes.json();
       });
-      const containerData = await containerRes.json();
+      
       if (containerData.error) throw new Error(`Instagram image container: ${containerData.error.message}`);
       return await publishIGContainer(igAccountId, containerData.id, pageToken);
     }
@@ -297,35 +323,31 @@ const publishers = {
     );
   },
 
-  // ─── Stubs ────────────────────────────────────────────────────
-// ─── Twitter (X) Publisher 🐦 ─────────────────────────────────
+  // ─── Twitter (X) Publisher 🐦 ─────────────────────────────────
   twitter: async ({ account, content, mediaUrls }) => {
     const accessToken = decrypt(account.accessToken);
     const mediaIds = [];
 
-    // 1. Handle Media Pre-Uploading (Images or Videos) if attached
     if (mediaUrls && mediaUrls.length > 0) {
       for (const url of mediaUrls) {
         try {
           logger.info('🐦', `Downloading asset for Twitter media stream: ${url}`);
           
-          // Download the file stream over the network via Axios
-          const mediaRes = await axios.get(url, { responseType: 'arraybuffer' });
+          const mediaRes = await withRetry(() => axios.get(url, { responseType: 'arraybuffer' }));
           const buffer = Buffer.from(mediaRes.data);
           const filename = url.split('/').pop() || 'upload.jpg';
 
-          // Wrap into native multipart form binary blocks
           const formData = new FormData();
           formData.append('media', new Blob([buffer]), filename);
 
-          // Upload directly to X's media ingestion endpoint
-          const uploadRes = await fetch('https://api.twitter.com/2/media/upload', {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${accessToken}` },
-            body: formData
+          const uploadData = await withRetry(async () => {
+            const uploadRes = await fetch('https://api.twitter.com/2/media/upload', {
+              method: 'POST',
+              headers: { 'Authorization': `Bearer ${accessToken}` },
+              body: formData
+            });
+            return await uploadRes.json();
           });
-
-          const uploadData = await uploadRes.json();
           
           if (uploadData.media_id_string) {
             mediaIds.push(uploadData.media_id_string);
@@ -339,31 +361,23 @@ const publishers = {
       }
     }
 
-    // 2. Build the structural Tweet request body payload
-    const tweetPayload = {
-      text: content
-    };
-
-    // Nest upload tracking IDs if array references are active
+    const tweetPayload = { text: content };
     if (mediaIds.length > 0) {
-      tweetPayload.media = {
-        media_ids: mediaIds
-      };
+      tweetPayload.media = { media_ids: mediaIds };
     }
 
-    // 3. Post the compilation live to Twitter / X
-    const res = await fetch('https://api.twitter.com/2/tweets', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(tweetPayload)
+    const data = await withRetry(async () => {
+      const res = await fetch('https://api.twitter.com/2/tweets', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(tweetPayload)
+      });
+      return await res.json();
     });
 
-    const data = await res.json();
-
-    // Check for API rejection schemas or error payloads
     if (data.errors || data.detail) {
       const errMsg = data.errors?.[0]?.message || data.detail || 'Authentication or scope error';
       throw new Error(`Twitter (X) API Error: ${errMsg}`);
@@ -374,6 +388,7 @@ const publishers = {
     
     return { postId: tweetId };
   },  
+  
   linkedin:  async () => { throw new Error('LinkedIn publisher not implemented yet'); },
   tiktok:    async () => { throw new Error('TikTok publisher not implemented yet'); },
   pinterest: async () => { throw new Error('Pinterest publisher not implemented yet'); },
@@ -395,24 +410,17 @@ const publishers = {
     youtubeThumbnailUrl 
   }) => {
     
-    // 🚀 USE THE NEW AUTO-REFRESH HELPER
     const youtubeApi = await getAuthenticatedYouTubeClient(account);
-
-    
-    // Convert proxies to clean JS primitives to prevent serialization errors
     const tagsArray          = Array.isArray(youtubeTags) ? [...youtubeTags] : [];
     const vanillaDescription = String(content || '');
     const vanillaTitle       = String(youtubeTitle || '');
     
     let targetVideoId = platformPostId;
 
-    // ─────────────────────────────────────────────────────────────
-    // MODE A: UPDATE EXISTING METADATA
-    // ─────────────────────────────────────────────────────────────
     if (platformPostId) {
       logger.info('▶️', `YouTube running in EDIT mode for Video ID: ${platformPostId}`);
       try {
-        await youtubeApi.videos.update({
+        await withRetry(() => youtubeApi.videos.update({
           part: 'snippet,status',
           requestBody: {
             id: platformPostId, 
@@ -427,16 +435,13 @@ const publishers = {
               selfDeclaredMadeForKids: Boolean(youtubeMadeForKids),
             },
           },
-        });
+        }));
         logger.info('▶️', `✅ YouTube Video metadata updated successfully!`);
       } catch (error) {
         logger.error('▶️', `YouTube video update error: ${error.message}`);
         throw new Error(`YouTube Update Error: ${error.message}`);
       }
     } 
-    // ─────────────────────────────────────────────────────────────
-    // MODE B: FRESH UPLOAD
-    // ─────────────────────────────────────────────────────────────
     else {
       if (!mediaUrls || mediaUrls.length === 0) {
         throw new Error('YouTube requires a video file.');
@@ -459,7 +464,8 @@ const publishers = {
       logger.info('▶️', `Starting fresh YouTube upload — file: ${decodeURIComponent(filename)} (${fileSize} bytes)`);
 
       try {
-        const uploadRes = await youtubeApi.videos.insert({
+        // ✅ WRAPPED IN RETRY
+        const uploadRes = await withRetry(() => youtubeApi.videos.insert({
           part: 'snippet,status',
           requestBody: {
             snippet: {
@@ -476,7 +482,7 @@ const publishers = {
           media: {
             body: fs.createReadStream(localFilePath),
           },
-        });
+        }));
 
         targetVideoId = uploadRes.data.id;
         logger.info('▶️', `✅ YouTube upload complete — Video ID: ${targetVideoId}`);
@@ -487,7 +493,7 @@ const publishers = {
     }
 
     // ─────────────────────────────────────────────────────────────
-    // ✅ SHARED DYNAMIC FORMAT THUMBNAIL ENGINE (RUNS FOR BOTH EDITS AND FRESH UPLOADS)
+    // ✅ STRICT 2MB YOUTUBE THUMBNAIL LIMIT CHECK
     // ─────────────────────────────────────────────────────────────
     if (youtubeThumbnailUrl && targetVideoId) {
       try {
@@ -495,32 +501,41 @@ const publishers = {
         
         const isPng = youtubeThumbnailUrl.toLowerCase().split('?')[0].endsWith('.png');
         const calculatedMimeType = isPng ? 'image/png' : 'image/jpeg';
+        const MAX_THUMB_SIZE = 2 * 1024 * 1024; // 2MB Limit
         
-        logger.info('▶️', `Detected thumbnail format: ${calculatedMimeType}`);
-
         let thumbnailStream;
 
         if (youtubeThumbnailUrl.startsWith('http')) {
-          const imageRes = await axios.get(youtubeThumbnailUrl, { responseType: 'stream' });
+          const imageRes = await withRetry(() => axios.get(youtubeThumbnailUrl, { responseType: 'stream' }));
+          
+          const contentLength = parseInt(imageRes.headers['content-length'], 10);
+          if (contentLength && contentLength > MAX_THUMB_SIZE) {
+            throw new Error(`Thumbnail is too large (${(contentLength / (1024 * 1024)).toFixed(2)}MB). YouTube strictly limits thumbnails to 2MB.`);
+          }
+          
           thumbnailStream = imageRes.data;
         } else {
           const thumbFilename = youtubeThumbnailUrl.split('/').pop();
           const localThumbPath = path.join(__dirname, '../uploads', thumbFilename);
           
           if (fs.existsSync(localThumbPath)) {
+            const stats = fs.statSync(localThumbPath);
+            if (stats.size > MAX_THUMB_SIZE) {
+              throw new Error(`Thumbnail is too large (${(stats.size / (1024 * 1024)).toFixed(2)}MB). YouTube strictly limits thumbnails to 2MB.`);
+            }
             thumbnailStream = fs.createReadStream(localThumbPath);
           } else {
             throw new Error(`Local thumbnail file path not found: ${localThumbPath}`);
           }
         }
 
-        await youtubeApi.thumbnails.set({
+        await withRetry(() => youtubeApi.thumbnails.set({
           videoId: targetVideoId,
           media: {
             mimeType: calculatedMimeType,
             body: thumbnailStream,
           },
-        });
+        }));
         
         logger.info('▶️', `✅ Custom thumbnail successfully pushed to YouTube!`);
       } catch (thumbErr) {
@@ -548,12 +563,14 @@ const detectIGMediaType = (urls) => {
 const publishIGContainer = async (igAccountId, creationId, pageToken) => {
   logger.info('📷', `Publishing container ${creationId}...`);
 
-  const publishRes  = await fetch(`https://graph.facebook.com/v19.0/${igAccountId}/media_publish`, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ creation_id: creationId, access_token: pageToken }),
+  const publishData = await withRetry(async () => {
+    const publishRes = await fetch(`https://graph.facebook.com/v19.0/${igAccountId}/media_publish`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ creation_id: creationId, access_token: pageToken }),
+    });
+    return await publishRes.json();
   });
-  const publishData = await publishRes.json();
 
   if (publishData.error) throw new Error(`Instagram publish: ${publishData.error.message}`);
   if (!publishData.id)   throw new Error(`Instagram publish failed: ${JSON.stringify(publishData)}`);
@@ -562,16 +579,17 @@ const publishIGContainer = async (igAccountId, creationId, pageToken) => {
   return { postId: publishData.id };
 };
 
-async function waitForMediaProcessing(containerId, accessToken, maxAttempts = 30) {
-  const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
+// ✅ BULLETPROOF FIX: Increased maxAttempts drastically for long videos to give Meta time to transcode
+async function waitForMediaProcessing(containerId, accessToken, maxAttempts = 90) {
   for (let i = 0; i < maxAttempts; i++) {
-    await delay(10000);
+    await sleep(10000); 
 
-    const response = await fetch(
-      `https://graph.facebook.com/v19.0/${containerId}?fields=status_code&access_token=${accessToken}`
-    );
-    const data = await response.json();
+    const data = await withRetry(async () => {
+      const response = await fetch(
+        `https://graph.facebook.com/v19.0/${containerId}?fields=status_code&access_token=${accessToken}`
+      );
+      return await response.json();
+    });
 
     if (data.error) {
       if (data.error.message.includes('Authorization')) {
@@ -581,12 +599,12 @@ async function waitForMediaProcessing(containerId, accessToken, maxAttempts = 30
     }
 
     if (data.status_code === 'FINISHED') return true;
-    if (data.status_code === 'ERROR')    throw new Error('Instagram failed to process the video.');
+    if (data.status_code === 'ERROR')    throw new Error('Instagram failed to process the video (File may be corrupt or not supported).');
 
-    logger.info('📷', `Reel processing: ${JSON.stringify(data)} — attempt ${i + 1}/${maxAttempts}`);
+    logger.info('📷', `Reel processing: ${data.status_code} — attempt ${i + 1}/${maxAttempts} (Can take up to 15 mins for long videos)`);
   }
 
-  throw new Error('Timeout: Instagram took too long to process the video container.');
+  throw new Error('Timeout: Instagram took too long to process the video container (exceeded 15 minutes).');
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -609,36 +627,33 @@ const publishToAccount = async (account, post) => {
   );
   const platformPostId = existingResult?.platformPostId || null;
 
- // ─── Facebook Routine (Updated) ───────────────────────────────
-                              if (platform === 'facebook') {
-                                const selectedPages = (account.pages || []).filter(p => p.isSelected);
-                                if (!selectedPages.length) throw new Error('Facebook: no pages selected for posting');
+  if (platform === 'facebook') {
+    const selectedPages = (account.pages || []).filter(p => p.isSelected);
+    if (!selectedPages.length) throw new Error('Facebook: no pages selected for posting');
 
-                                const results = [];
-                                for (const page of selectedPages) {
-                                  try {
-                                    const pageToken = decrypt(page.pageAccessToken);
-                                    // 🌟 ADDED 'mediaType' to the arguments here
-                                    const result    = await publisher({ 
-                                      accessToken, 
-                                      pageToken, 
-                                      accountId: account.accountId, 
-                                      pageId: page.pageId, 
-                                      content, 
-                                      mediaUrls,
-                                      mediaType // <--- Pass this through
-                                    });
-                                    results.push({ pageId: page.pageId, pageName: page.pageName, postId: result.postId, status: 'published' });
-                                  } catch (err) {
-                                    results.push({ pageId: page.pageId, pageName: page.pageName, status: 'failed', error: err.message });
-                                  }
-                                }
-                                const firstSuccess = results.find(r => r.status === 'published');
-                                if (!firstSuccess) throw new Error(results.map(r => r.error).join(', '));
-                                return { postId: firstSuccess.postId, status: 'published', pages: results };
+    const results = [];
+    for (const page of selectedPages) {
+      try {
+        const pageToken = decrypt(page.pageAccessToken);
+        const result    = await publisher({ 
+          accessToken, 
+          pageToken, 
+          accountId: account.accountId, 
+          pageId: page.pageId, 
+          content, 
+          mediaUrls,
+          mediaType
+        });
+        results.push({ pageId: page.pageId, pageName: page.pageName, postId: result.postId, status: 'published' });
+      } catch (err) {
+        results.push({ pageId: page.pageId, pageName: page.pageName, status: 'failed', error: err.message });
+      }
+    }
+    const firstSuccess = results.find(r => r.status === 'published');
+    if (!firstSuccess) throw new Error(results.map(r => r.error).join(', '));
+    return { postId: firstSuccess.postId, status: 'published', pages: results };
   }
 
-  // ── Instagram Routine ──────────────────────────────────────
   if (platform === 'instagram') {
     const page = (account.pages || [])[0];
     if (!page?.pageAccessToken) throw new Error('Instagram: page access token not found');
@@ -659,7 +674,6 @@ const publishToAccount = async (account, post) => {
     };
   }
 
-  // ── YouTube & Other Generic Platforms ──────────────────────
   return await publisher({ 
     account, 
     accessToken, 
@@ -672,7 +686,7 @@ const publishToAccount = async (account, post) => {
     youtubeCategory:     post.youtubeCategory,
     youtubePrivacy:      post.youtubePrivacy,
     youtubeMadeForKids:  post.youtubeMadeForKids,
-    youtubeThumbnailUrl: post.youtubeThumbnail // 🚀 FIXED: Added parameter forward routing!
+    youtubeThumbnailUrl: post.youtubeThumbnail
   });
 };
 

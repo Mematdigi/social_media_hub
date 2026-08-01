@@ -1,0 +1,191 @@
+
+// ============================================================
+// _terms.scss — Shared Legal Pages (Terms & Privacy)
+// ============================================================
+@use 'variables' as *;
+@use 'mixins'    as *;
+
+// ── Page shell ───────────────────────────────────────────────
+.legal-page {
+  background: $slate-50;
+  min-height: 100vh;
+  padding: clamp(2.5rem, 6vw, 5rem) 0 clamp(4rem, 8vw, 6rem);
+
+  &__container {
+    max-width: 46rem;
+    margin: 0 auto;
+    padding: 0 clamp(1.25rem, 4vw, 2rem);
+  }
+
+  // ── Header ─────────────────────────────────────────────────
+  &__header {
+    margin-bottom: clamp(2rem, 5vw, 3rem);
+  }
+
+  &__eyebrow {
+    font-size: $text-sm;
+    font-weight: 600;
+    color: $indigo-600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin: 0 0 0.75rem;
+  }
+
+  &__title {
+    font-family: $font-heading;
+    font-size: clamp(1.75rem, 6vw, 2.75rem);
+    font-weight: 700;
+    color: $slate-900;
+    line-height: 1.15;
+    margin: 0 0 1rem;
+  }
+
+  &__intro {
+    font-size: $text-lg;
+    line-height: 1.65;
+    color: $slate-500;
+    margin: 0;
+  }
+}
+
+// ── Table of contents ────────────────────────────────────────
+.legal-toc {
+  @include card(0);
+  padding: clamp(1.25rem, 3vw, 1.75rem);
+  margin-bottom: clamp(2rem, 5vw, 3rem);
+
+  &__label {
+    font-size: $text-xs;
+    font-weight: 600;
+    color: $slate-400;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin: 0 0 0.75rem;
+  }
+
+  &__list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.5rem;
+
+    @include xs {
+      grid-template-columns: repeat(2, 1fr);
+    }
+
+    a {
+      font-size: $text-sm;
+      font-weight: 500;
+      color: $slate-900;
+      text-decoration: none;
+      transition: color $transition-fast;
+
+      @include hover-device {
+        &:hover {
+          color: $indigo-600;
+          text-decoration: underline;
+        }
+      }
+    }
+  }
+}
+
+// ── Sections ─────────────────────────────────────────────────
+.legal-sections {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(1.5rem, 4vw, 2rem);
+}
+
+.legal-section {
+  @include card(0);
+  padding: clamp(1.5rem, 4vw, 2.25rem);
+  scroll-margin-top: 2rem;
+
+  &__head {
+    @include flex-start(0.875rem);
+    margin-bottom: 0.875rem;
+  }
+
+  &__index {
+    @include flex-center;
+    flex-shrink: 0;
+    width: 2.25rem;
+    height: 2.25rem;
+    border-radius: $radius-xl;
+    background: $indigo-50;
+    color: $indigo-600;
+    font-family: $font-heading;
+    font-weight: 700;
+    font-size: $text-sm;
+  }
+
+  &__title {
+    font-family: $font-heading;
+    font-weight: 700;
+    font-size: clamp(1.05rem, 3vw, 1.25rem);
+    color: $slate-900;
+    margin: 0;
+    line-height: 1.3;
+  }
+
+  &__body {
+    font-size: $text-base;
+    line-height: 1.7;
+    color: $slate-500;
+    margin: 0 0 0.5rem;
+  }
+
+  &__list-label {
+    font-weight: 600;
+    color: $slate-900;
+  }
+
+  &__list,
+  &__bullets,
+  &__contact {
+    list-style: none;
+    margin: 0.75rem 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+
+    li {
+      font-size: $text-base;
+      line-height: 1.7;
+      color: $slate-500;
+      padding-left: 1.25rem;
+      position: relative;
+
+      &::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 0.7em;
+        width: 0.375rem;
+        height: 0.375rem;
+        border-radius: $radius-full;
+        background: $indigo-500;
+      }
+
+      a {
+        color: $indigo-600;
+        font-weight: 500;
+        text-decoration: none;
+
+        @include hover-device {
+          &:hover {
+            text-decoration: underline;
+          }
+        }
+      }
+    }
+  }
+
+  &__contact li::before {
+    background: $slate-400;
+  }
+}
