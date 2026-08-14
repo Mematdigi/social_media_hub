@@ -382,7 +382,6 @@ router.get('/oauth/:platform', async (req, res) => {
     }
 
     const credentials = OAUTH_CREDENTIALS[platform];
-    console.log(" twitter credentials",credentials)
 
     if (!credentials?.clientId) {
       logger.info(`🔗 Demo mode for ${platform}`);
@@ -395,7 +394,8 @@ router.get('/oauth/:platform', async (req, res) => {
     if (platform === 'facebook' || platform === 'instagram') {
       const scope = platform === 'facebook'
         ? 'public_profile,pages_show_list,pages_read_engagement,pages_manage_posts'
-        : 'public_profile,pages_show_list,pages_read_engagement,instagram_basic,instagram_content_publish,business_management';
+        // ✨ THE FIX: Added pages_manage_posts to the Instagram scope so the token isn't Read-Only!
+        : 'public_profile,pages_show_list,pages_read_engagement,pages_manage_posts,instagram_basic,instagram_content_publish,business_management';
 
       const authUrl =
         `https://www.facebook.com/v19.0/dialog/oauth?` +
@@ -430,7 +430,7 @@ router.get('/oauth/:platform', async (req, res) => {
     }
 
     if (platform === 'twitter' || platform === 'x') {
-      const scope = ['tweet.read', 'tweet.write', 'users.read', 'offline.access'].join(' ');
+      const scope = ['tweet.read', 'tweet.write', 'users.read', 'offline.access','media.write'].join(' ');
 
       const authUrl =
         `https://x.com/i/oauth2/authorize?` + 

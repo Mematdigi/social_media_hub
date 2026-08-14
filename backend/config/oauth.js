@@ -18,7 +18,7 @@ const OAUTH_CONFIG = {
   twitter: {
     authUrl: 'https://twitter.com/i/oauth2/authorize',
     tokenUrl: 'https://api.twitter.com/2/oauth2/token',
-    scope: 'tweet.read tweet.write users.read offline.access',
+    scope: 'tweet.read tweet.write users.read offline.access media.write', // ✨ added media.write
     responseType: 'code',
   },
   linkedin: {

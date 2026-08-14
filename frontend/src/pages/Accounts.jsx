@@ -11,6 +11,7 @@ export default function Accounts() {
   const { platforms, loading, connectedCount, disconnectAccount, refetchAccounts } = useAccounts();
 
   // 🚀 FIX: Listen to the global message event from the OAuth popup to refresh UI data
+// 🚀 FIX: Listen to the global message event from the OAuth popup
   useEffect(() => {
     const handleMessage = (event) => {
       if (event.data && event.data.source === 'socialhub_oauth') {
@@ -18,7 +19,14 @@ export default function Accounts() {
 
         if (success) {
           toast.success(`${responsePlatform.charAt(0).toUpperCase() + responsePlatform.slice(1)} connected successfully!`);
-          if (refetchAccounts) refetchAccounts(); // Instantly update the matrix grid
+          
+          if (refetchAccounts) refetchAccounts(); 
+          
+          // ✨ THE AUTO-REFRESH FIX: Force the browser to automatically reload after 1.5 seconds
+          setTimeout(() => {
+            window.location.reload();
+          }, 1500);
+
         } else {
           toast.error(`Failed to connect ${responsePlatform}: ${message}`);
         }
@@ -111,7 +119,7 @@ export default function Accounts() {
               <React.Fragment key={`group-${platform.platform}`}>
                 {platform.accounts.map((singleAccount, accIndex) => {
                   
-                  // ✨ NEW: Break out Facebook nested pages into individual cards
+                  // Break out Facebook nested pages into individual cards
                   if (platform.platform === 'facebook' && singleAccount.pages && singleAccount.pages.length > 0) {
                     return singleAccount.pages.map((page, pageIndex) => (
                       <motion.div
@@ -130,13 +138,14 @@ export default function Accounts() {
                             category: page.category     // Pass the category
                           }}
                           oauthSupported={platform.oauthSupported}
-                          onDisconnect={() => disconnectAccount(page.pageId)} // Ensure disconnect targets the specific page
+                          // ✨ FIX: Target the parent database ID so the backend successfully deletes the connection
+                          onDisconnect={() => disconnectAccount(singleAccount.id || singleAccount._id)} 
                         />
                       </motion.div>
                     ));
                   }
 
-                  // Existing logic for Instagram/YouTube
+                  // Existing logic for Instagram/YouTube/Twitter
                   return (
                     <motion.div
                       key={`acc-${singleAccount.id || singleAccount._id || accIndex}`}
@@ -149,7 +158,8 @@ export default function Accounts() {
                         connected={true}
                         account={singleAccount}
                         oauthSupported={platform.oauthSupported}
-                        onDisconnect={disconnectAccount}
+                        // ✨ FIX: Explicitly target the database ID here as well
+                        onDisconnect={() => disconnectAccount(singleAccount.id || singleAccount._id)}
                       />
                     </motion.div>
                   );
