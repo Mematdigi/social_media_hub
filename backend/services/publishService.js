@@ -4,6 +4,7 @@ const logger      = require('../utils/logger');
 const { google }  = require('googleapis');
 const fs          = require('fs');
 const path        = require('path');
+const axios       = require('axios'); // ✨ THIS IS THE MISSING LINE!
 
 // ═══════════════════════════════════════════════════════════════
 // PLATFORM PUBLISHERS
@@ -12,18 +13,163 @@ const path        = require('path');
 const publishers = {
 
   // ─── Facebook ────────────────────────────────────────────────
-  facebook: async ({ pageToken, pageId, content, mediaUrls }) => {
-    const body = { message: content, access_token: pageToken };
-    if (mediaUrls?.length) body.link = mediaUrls[0];
+facebook: async ({ pageToken, pageId, content, mediaUrls, mediaType }) => {
+    try {
+      // 1. TEXT-ONLY POST
+      if (!mediaUrls || mediaUrls.length === 0) {
+        logger.info('📝', `Facebook: Publishing text-only post to page ${pageId}`);
+        const res = await axios.post(`https://graph.facebook.com/v19.0/${pageId}/feed`, {
+          message: content || '',
+          access_token: pageToken
+        });
+        return { postId: res.data.id };
+      }
 
-    const res  = await fetch(`https://graph.facebook.com/v19.0/${pageId}/feed`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(body),
-    });
-    const data = await res.json();
-    if (data.error) throw new Error(`Facebook: ${data.error.message}`);
-    return { postId: data.id };
+      const mediaUrl = mediaUrls[0];
+      const isVideo = mediaType === 'video' || /\.(mp4|mov|webm|avi|mkv)/i.test(mediaUrl);
+
+      // 2. BULLETPROOF NATIVE VIDEO UPLOAD (Resumable Chunked API)
+      if (isVideo) {
+        logger.info('▶️', `Facebook: Starting bulletproof video upload for page ${pageId}`);
+        
+        let filePathToUpload = null;
+        let isTempFile = false;
+
+        const filename = mediaUrl.split('/').pop();
+        const decodedFilename = decodeURIComponent(filename);
+        const localFilePath = path.join(__dirname, '../uploads', decodedFilename);
+
+        if (fs.existsSync(localFilePath)) {
+          logger.info('🎬', `Using existing local file for upload: ${decodedFilename}`);
+          filePathToUpload = localFilePath;
+        } else {
+          // Download to local disk buffer first
+          const tempFilename = `temp_fb_${Date.now()}.mp4`;
+          filePathToUpload = path.join(__dirname, '../uploads', tempFilename);
+          isTempFile = true;
+
+          logger.info('🎬', `Downloading remote video to local disk buffer...`);
+          const response = await withRetry(() => axios({
+            url: mediaUrl,
+            method: 'GET',
+            responseType: 'stream'
+          }));
+
+          const writer = fs.createWriteStream(filePathToUpload);
+          response.data.pipe(writer);
+
+          await new Promise((resolve, reject) => {
+            writer.on('finish', resolve);
+            writer.on('error', reject);
+          });
+        }
+
+        try {
+          const fileSize = fs.statSync(filePathToUpload).size;
+          logger.info('🎬', `Ready for Resumable Upload. Exact size: ${fileSize} bytes.`);
+
+          // PHASE 1: START
+          const startRes = await withRetry(() => axios.post(`https://graph-video.facebook.com/v19.0/${pageId}/videos`, null, {
+            params: {
+              access_token: pageToken,
+              upload_phase: 'start',
+              file_size: fileSize
+            }
+          }));
+
+          const sessionId = startRes.data.upload_session_id;
+          const videoId = startRes.data.video_id;
+          let startOffset = parseInt(startRes.data.start_offset, 10);
+
+          logger.info('🎬', `Session initialized. Video ID: ${videoId}`);
+
+          // PHASE 2: TRANSFER
+          const FormData = require('form-data');
+          
+          // 🛡️ THE FIX: Hardcode a safe max chunk size (10MB) to prevent 413 Payload Too Large
+          const MAX_CHUNK_SIZE = 10 * 1024 * 1024; 
+
+          while (startOffset < fileSize) {
+            // Calculate a safe end offset for this specific chunk
+            let currentEndOffset = startOffset + MAX_CHUNK_SIZE;
+            if (currentEndOffset > fileSize) {
+              currentEndOffset = fileSize; // Ensure we don't overshoot the file size
+            }
+
+            logger.info('🎬', `Uploading chunk: bytes ${startOffset} to ${currentEndOffset}...`);
+            
+            const transferRes = await withRetry(async () => {
+              const chunkStream = fs.createReadStream(filePathToUpload, {
+                start: startOffset,
+                end: currentEndOffset - 1 // createReadStream end is inclusive
+              });
+
+              const chunkForm = new FormData();
+              chunkForm.append('access_token', pageToken);
+              chunkForm.append('upload_phase', 'transfer');
+              chunkForm.append('upload_session_id', sessionId);
+              chunkForm.append('start_offset', startOffset.toString());
+              chunkForm.append('video_file_chunk', chunkStream, { filename: 'chunk.mp4' });
+
+              return await axios.post(
+                `https://graph-video.facebook.com/v19.0/${pageId}/videos`, 
+                chunkForm,
+                {
+                  headers: chunkForm.getHeaders(),
+                  maxBodyLength: Infinity,
+                  maxContentLength: Infinity
+                }
+              );
+            });
+
+            // Facebook tells us where to start the next chunk. 
+            // Fallback to our manual calculation just in case FB returns undefined
+            const nextStart = parseInt(transferRes.data.start_offset, 10);
+            startOffset = isNaN(nextStart) ? currentEndOffset : nextStart;
+          }
+
+          // PHASE 3: FINISH
+          logger.info('🎬', `All chunks uploaded. Finalizing and publishing...`);
+          
+          await withRetry(() => axios.post(`https://graph-video.facebook.com/v19.0/${pageId}/videos`, null, {
+            params: {
+              access_token: pageToken,
+              upload_phase: 'finish',
+              upload_session_id: sessionId,
+              description: content || '' 
+            }
+          }));
+
+          logger.info('✅', `Massive Facebook video published successfully! ID: ${videoId}`);
+          return { postId: videoId };
+
+        } finally {
+          // Clean up ONLY if we generated a temporary file for download
+          if (isTempFile && filePathToUpload && fs.existsSync(filePathToUpload)) {
+            fs.unlinkSync(filePathToUpload);
+            logger.info('🎬', `Cleaned up temporary disk buffer file.`);
+          }
+        }
+      } 
+      
+      // 3. NATIVE PHOTO UPLOAD
+      else {
+        logger.info('🖼️', `Facebook: Uploading native photo to page ${pageId}`);
+        const res = await axios.post(`https://graph.facebook.com/v19.0/${pageId}/photos`, {
+          caption: content || '',
+          url: encodeURI(mediaUrl),
+          access_token: pageToken
+        });
+        
+        logger.info('✅', `Facebook photo published successfully! ID: ${res.data.id || res.data.post_id}`);
+        return { postId: res.data.id || res.data.post_id };
+      }
+      
+    } catch (error) {
+      const errorMsg = error.response?.data?.error?.message || error.message;
+      logger.error('❌', `Facebook Error Details: ${JSON.stringify(error.response?.data || error.message)}`);
+      throw new Error(`Facebook API Error: ${errorMsg}`);
+    }
   },
 
   // ─── Instagram ───────────────────────────────────────────────
@@ -98,37 +244,55 @@ const publishers = {
   telegram:  async () => { throw new Error('Telegram publisher not implemented yet'); },
 
   // ─── YouTube ──────────────────────────────────────────────────
-  // Now accepts the full set of metadata fields from the post document.
-  // Fields: youtubeTitle, youtubeTags, youtubeCategory, youtubePrivacy, youtubeMadeForKids
-      // ─── YouTube ──────────────────────────────────────────────────
-  // ─── YouTube Publisher (Handles Fresh Uploads & Metadata Edits) ───
   youtube: async ({
     account,
     content,
     mediaUrls,
-    platformPostId, // 🆕 Passed automatically during an edit execution
+    platformPostId, 
     youtubeTitle,
     youtubeTags        = [],
     youtubeCategory    = '22',   
     youtubePrivacy     = 'public',
     youtubeMadeForKids = false,
-    youtubeThumbnailUrl // 🆕 Incoming property
+    youtubeThumbnailUrl 
   }) => {
-    // 1. Initialize OAuth client using your SocialAccount schema fields
+    // 1. Initialize OAuth client
     const oauth2Client = new google.auth.OAuth2(
       process.env.YOUTUBE_CLIENT_ID,
       process.env.YOUTUBE_CLIENT_SECRET
     );
-    oauth2Client.setCredentials({
-      access_token:  decrypt(account.accessToken),
-      refresh_token: account.refreshToken ? decrypt(account.refreshToken) : undefined,
-    });
+
+    const decryptedRefresh = account.refreshToken ? decrypt(account.refreshToken) : null;
+
+    if (decryptedRefresh) {
+      logger.info('▶️', 'YouTube: Refresh token found! Fetching a brand new access token from Google...');
+      oauth2Client.setCredentials({ refresh_token: decryptedRefresh });
+
+      try {
+        await oauth2Client.getAccessToken();
+        logger.info('▶️', '✅ YouTube token successfully auto-refreshed in the background!');
+      } catch (tokenErr) {
+        throw new Error(`Google rejected the refresh token. You must reconnect YouTube on the dashboard. Details: ${tokenErr.message}`);
+      }
+    } else {
+      logger.info('▶️', 'YouTube: No refresh token found, using standard access token.');
+      oauth2Client.setCredentials({
+        access_token: decrypt(account.accessToken),
+      });
+    }
 
     const youtubeApi = google.youtube({ version: 'v3', auth: oauth2Client });
     const tagsArray  = Array.isArray(youtubeTags) ? youtubeTags : [];
 
+    // ✨ THE FIX: Safely truncate titles to YouTube's strict 100-character limit
+    let safeTitle = (youtubeTitle || 'New Video').trim();
+    if (safeTitle.length > 100) {
+      safeTitle = safeTitle.substring(0, 97) + '...';
+      logger.info('▶️', 'YouTube title exceeded 100 characters. Automatically truncated to fit API limits.');
+    }
+
     // ─────────────────────────────────────────────────────────────
-    // 🆕 MODE A: UPDATE EXISTING METADATA (PREVENTS DUPLICATE VIDEO)
+    // MODE A: UPDATE EXISTING METADATA (PREVENTS DUPLICATE VIDEO)
     // ─────────────────────────────────────────────────────────────
     if (platformPostId) {
       logger.info('▶️', `YouTube running in EDIT mode for Video ID: ${platformPostId}`);
@@ -136,9 +300,9 @@ const publishers = {
         await youtubeApi.videos.update({
           part: 'snippet,status',
           requestBody: {
-            id: platformPostId, // Tells YouTube exactly which video to change
+            id: platformPostId,
             snippet: {
-              title:       youtubeTitle || 'Updated Video Title',
+              title:       safeTitle, // <-- Applied safe title
               description: content      || '',
               tags:        tagsArray,
               categoryId:  youtubeCategory,
@@ -151,7 +315,7 @@ const publishers = {
         });
 
         logger.info('▶️', `✅ YouTube Video metadata updated successfully!`);
-        return { postId: platformPostId }; // Returns same ID back to keep database clean
+        return { postId: platformPostId };
       } catch (error) {
         logger.error('▶️', `YouTube video update error: ${error.message}`);
         throw new Error(`YouTube Update Error: ${error.message}`);
@@ -161,20 +325,17 @@ const publishers = {
     // ─────────────────────────────────────────────────────────────
     // MODE B: FRESH UPLOAD (ONLY RUNS ON FIRST PUBLISH)
     // ─────────────────────────────────────────────────────────────
-if (!mediaUrls || mediaUrls.length === 0) {
+    if (!mediaUrls || mediaUrls.length === 0) {
       throw new Error('YouTube requires a video file.');
     }
 
-    // 🆕 1. Trim any accidental trailing hidden whitespaces from the string
     const videoUrl = mediaUrls[0].trim(); 
-    
-    // 🆕 2. Use a resilient match that isolates the extension even if spaces/parameters follow it
     const hasValidExtension = /\.(mp4|mov|webm|avi|mkv)/i.test(videoUrl);
+
     if (!hasValidExtension) {
       throw new Error('YouTube requires a valid video format (mp4, mov, webm, avi, mkv).');
     }
 
-    // 🆕 3. Use decodeURIComponent so files with both encoded "%20" and raw " " spaces resolve correctly on disk
     const filename      = videoUrl.split('/').pop();
     const localFilePath = path.join(__dirname, '../uploads', decodeURIComponent(filename));
 
@@ -190,7 +351,7 @@ if (!mediaUrls || mediaUrls.length === 0) {
         part: 'snippet,status',
         requestBody: {
           snippet: {
-            title:       youtubeTitle || 'New Video',
+            title:       safeTitle, // <-- Applied safe title
             description: content      || '',
             tags:        tagsArray,
             categoryId:  youtubeCategory,
@@ -208,54 +369,53 @@ if (!mediaUrls || mediaUrls.length === 0) {
       const videoId = uploadRes.data.id;
       logger.info('▶️', `✅ YouTube upload complete — Video ID: ${videoId}`);
 
-      // 🆕 Core Helper Routine: Upload Custom Thumbnail Asset to Google
-  // ─── 🔄 DYNAMIC FORMAT THUMBNAIL STREAMER ───────────────────────
-          if (youtubeThumbnailUrl) {
-            try {
-              logger.info('▶️', `Setting custom thumbnail for Video ID: ${platformPostId || videoId}`);
-              
-              // 🆕 Fix: Dynamically match the exact mimeType to the file extension
-              const isPng = youtubeThumbnailUrl.toLowerCase().split('?')[0].endsWith('.png');
-              const calculatedMimeType = isPng ? 'image/png' : 'image/jpeg';
-              
-              logger.info('▶️', `Detected format: ${calculatedMimeType} for file`);
+      // ─── 🔄 DYNAMIC FORMAT THUMBNAIL STREAMER ───────────────────────
+      if (youtubeThumbnailUrl) {
+        try {
+          logger.info('▶️', `Setting custom thumbnail for Video ID: ${videoId}`);
 
-              let thumbnailStream;
+          const isPng = youtubeThumbnailUrl.toLowerCase().split('?')[0].endsWith('.png');
+          const calculatedMimeType = isPng ? 'image/png' : 'image/jpeg';
 
-              if (youtubeThumbnailUrl.startsWith('http')) {
-                // Fetch the image via network stream
-                const imageRes = await axios.get(youtubeThumbnailUrl, { responseType: 'stream' });
-                thumbnailStream = imageRes.data;
-              } else {
-                // Fallback to local disk file
-                const thumbFilename = youtubeThumbnailUrl.split('/').pop();
-                const localThumbPath = path.join(__dirname, '../uploads', thumbFilename);
-                
-                if (fs.existsSync(localThumbPath)) {
-                  thumbnailStream = fs.createReadStream(localThumbPath);
-                } else {
-                  throw new Error(`Local file path not found: ${localThumbPath}`);
-                }
-              }
+          let thumbnailStream;
 
-              // Send the stream to Google's API servers with matching headers
-              await youtubeApi.thumbnails.set({
-                videoId: platformPostId || videoId,
-                media: {
-                  mimeType: calculatedMimeType, // ✅ FIXED: Dynamically passes image/png or image/jpeg
-                  body: thumbnailStream,
-                },
-              });
-              
-              logger.info('▶️', `✅ Custom thumbnail successfully pushed to YouTube!`);
-            } catch (thumbErr) {
-              const apiError = thumbErr.response?.data?.error?.message || thumbErr.message;
-              logger.error('▶️', `❌ YouTube Thumbnail upload failed: ${apiError}`);
+          if (youtubeThumbnailUrl.startsWith('http')) {
+            const imageRes = await axios.get(youtubeThumbnailUrl, { responseType: 'stream' });
+            thumbnailStream = imageRes.data;
+          } else {
+            const thumbFilename = youtubeThumbnailUrl.split('/').pop();
+            const localThumbPath = path.join(__dirname, '../uploads', thumbFilename);
+
+            if (fs.existsSync(localThumbPath)) {
+              thumbnailStream = fs.createReadStream(localThumbPath);
+            } else {
+              throw new Error(`Local file path not found: ${localThumbPath}`);
             }
           }
-          return { postId: videoId };
 
+          await youtubeApi.thumbnails.set({
+            videoId: videoId,
+            media: {
+              mimeType: calculatedMimeType,
+              body: thumbnailStream,
+            },
+          });
 
+          logger.info('▶️', `✅ Custom thumbnail successfully pushed to YouTube!`);
+        } catch (thumbErr) {
+          const apiError = thumbErr.response?.data?.error?.message || thumbErr.message;
+          
+          // ✨ THE FIX: Suppress the permissions error so it doesn't look like a crash.
+          if (apiError.toLowerCase().includes('permissions')) {
+            logger.warn('▶️', `⚠️ Thumbnail skipped: YouTube Channel is not verified for custom thumbnails yet. Video published with default thumbnail!`);
+          } else {
+            logger.warn('▶️', `⚠️ Thumbnail skipped due to API error: ${apiError}`);
+          }
+        }
+      }
+      
+      // We always return success here because the video uploaded perfectly
+      return { postId: videoId };
 
     } catch (error) {
       logger.error('▶️', `YouTube upload error: ${error.message}`);
@@ -264,6 +424,20 @@ if (!mediaUrls || mediaUrls.length === 0) {
   },
 };
 
+// Add this near the top of your file, outside your exports
+const withRetry = async (fn, maxRetries = 3, delayMs = 2000) => {
+  let attempt = 0;
+  while (attempt < maxRetries) {
+    try {
+      return await fn();
+    } catch (error) {
+      attempt++;
+      if (attempt >= maxRetries) throw error; // Give up after max retries
+      console.warn(`⚠️ Network request failed. Retrying... (${attempt}/${maxRetries})`);
+      await new Promise(resolve => setTimeout(resolve, delayMs)); // Wait before retrying
+    }
+  }
+};
 
 // ═══════════════════════════════════════════════════════════════
 // INSTAGRAM HELPERS
@@ -345,7 +519,15 @@ const publishToAccount = async (account, post) => {
   // ── Facebook Routine ───────────────────────────────────────
   if (platform === 'facebook') {
     const selectedPages = (account.pages || []).filter(p => p.isSelected);
-    if (!selectedPages.length) throw new Error('Facebook: no pages selected for posting');
+    
+    // 🕵️ DEBUG TRAP: See exactly what the publisher receives
+    logger.info('🕵️', `Publisher received ${selectedPages.length} selected pages for account ${account.accountId}`);
+    
+    if (!selectedPages.length) {
+      // Print the available pages so we can see why it didn't match
+      const availablePages = (account.pages || []).map(p => p.pageId).join(', ');
+      throw new Error(`Facebook: no pages selected for posting! Available pages in memory: [${availablePages}]`);
+    }
 
     const results = [];
     for (const page of selectedPages) {
@@ -396,7 +578,8 @@ const publishToAccount = async (account, post) => {
     youtubeTags:        post.youtubeTags,
     youtubeCategory:    post.youtubeCategory,
     youtubePrivacy:     post.youtubePrivacy,
-    youtubeMadeForKids: post.youtubeMadeForKids
+    youtubeMadeForKids: post.youtubeMadeForKids,
+    youtubeThumbnailUrl: post.youtubeThumbnail // ✨ THE FIX: Hand the image to the publisher!
   });
 };
 

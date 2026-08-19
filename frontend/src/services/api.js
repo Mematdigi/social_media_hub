@@ -157,25 +157,34 @@ initiateOAuth: async (platform) => {
 },
 };
 // Posts API
+// Posts API
 export const postsAPI = {
-getAll: (statusOrParams, platform) => {
-    // If the first argument is our pagination configuration object, send it directly
+  // Passes frontend filters (status, platform, limits, search) seamlessly to the backend
+  getAll: (statusOrParams, platform) => {
     if (typeof statusOrParams === 'object' && statusOrParams !== null) {
       return api.get('/posts', { params: statusOrParams });
     }
-    // Fallback support for any legacy calls across the application
+    // Fallback support for legacy calls
     return api.get('/posts', { params: { status: statusOrParams, platform } });
   },  
 
-getOne:  (postId)           => api.get(`/posts/${postId}`),
+  getOne:  (postId)           => api.get(`/posts/${postId}`),
   create:  (data)             => api.post('/posts', data),
   update:  (postId, data)     => api.put(`/posts/${postId}`, data),
+  
   delete:  (postId, deleteFromPlatform = true) =>
     api.delete(`/posts/${postId}`, { params: { deleteFromPlatform } }),
+    
   publish: (postId, selectedPages = {}) =>
     api.post(`/posts/${postId}/publish`, { selectedPages }),
-  sync:    (platform, accountId) =>
-    api.post('/posts/sync', null, { params: { platform, accountId } }),
+    
+  // ✨ ADDED: Triggers the backend worker to re-attempt failed uploads
+  retryFailed: (postId) => 
+    api.post(`/posts/${postId}/retry-failed`),
+    
+  // ✨ FIXED: Triggers a clean fetch to run the backend auto-sync engine without throwing a 404
+  sync: () => 
+    api.get('/posts', { params: { page: 1, limit: 10 } }),
 };
 
 // Scheduler API

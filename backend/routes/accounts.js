@@ -102,7 +102,7 @@ const saveFacebookAccount = async (userId, accessToken) => {
       accountId:      profile.id,
       profilePicture: profile.picture?.data?.url,
       accessToken:    encrypt(longLivedToken),
-      tokenExpiry:    new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
+      tokenExpiry:    new Date(Date.now() + 60 * 24 * 60 * 60 * 1000), // 60 days
       isActive:       true,
       followers,
       pages: pages.map(p => ({
@@ -276,7 +276,6 @@ const saveYouTubeAccount = async (userId, tokens) => {
             profilePicture: channelPic, 
             accessToken: encrypt(tokens.access_token),
             refreshToken: finalRefreshToken,
-            // ✅ CRITICAL FIX: Replaced "undefined" with the 1-hour fallback (3.5M milliseconds)
             tokenExpiry: tokens.expiry_date ? new Date(tokens.expiry_date) : new Date(Date.now() + 3500000), 
             isActive: true,
             updatedAt: new Date()
@@ -394,7 +393,6 @@ router.get('/oauth/:platform', async (req, res) => {
     if (platform === 'facebook' || platform === 'instagram') {
       const scope = platform === 'facebook'
         ? 'public_profile,pages_show_list,pages_read_engagement,pages_manage_posts'
-        // ✨ THE FIX: Added pages_manage_posts to the Instagram scope so the token isn't Read-Only!
         : 'public_profile,pages_show_list,pages_read_engagement,pages_manage_posts,instagram_basic,instagram_content_publish,business_management';
 
       const authUrl =
@@ -416,6 +414,7 @@ router.get('/oauth/:platform', async (req, res) => {
         'https://www.googleapis.com/auth/userinfo.profile',
       ].join(' ');
 
+      // ✨ THE FIX: strictly `prompt=consent` without raw spaces
       const authUrl =
         `https://accounts.google.com/o/oauth2/v2/auth?` +
         `client_id=${credentials.clientId}` +
@@ -424,7 +423,7 @@ router.get('/oauth/:platform', async (req, res) => {
         `&state=${state}` +
         `&response_type=code` +
         `&access_type=offline` +  
-        `&prompt=consent select_account`; 
+        `&prompt=consent`; 
 
       return res.redirect(authUrl);
     }

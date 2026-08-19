@@ -74,6 +74,7 @@ router.post('/upload', authMiddleware, (req, res) => {
 const formatPost = (post, accounts = [], publisherInfo = null) => ({
   id: post.id, userId: post.userId, content: post.content, mediaUrls: post.mediaUrls || [],
   mediaFormats: post.mediaFormats || {}, accountIds: post.accountIds || [], platforms: post.platforms || [],
+  selectedPages: post.selectedPages || {}, // <--- ADD THIS LINE HERE
   status: post.status, scheduledAt: post.scheduledAt?.toISOString() || null, publishedAt: post.publishedAt?.toISOString() || null,
   
   publisherInfo: publisherInfo, // ✨ Attached publisher data from User schema
@@ -96,17 +97,26 @@ const formatPost = (post, accounts = [], publisherInfo = null) => ({
 
 const getAccountsForPublish = async (accountIds, selectedPageIds = {}) => {
   const accounts = [];
+  
+  // Make sure we have a clean object
+  const safeSelectedPages = selectedPageIds instanceof Map 
+    ? Object.fromEntries(selectedPageIds) 
+    : (selectedPageIds?.toObject ? selectedPageIds.toObject() : selectedPageIds);
+
   for (const accId of accountIds) {
-    const acc = await db.SocialAccount.findOne({ id: accId }).select('-_id -__v');
+    const acc = await SocialAccount.findOne({ id: accId }).select('-_id -__v');
     if (!acc) continue;
     
     let accObj = acc.toObject ? acc.toObject() : acc;
     
     if (accObj.platform === 'facebook' && accObj.pages?.length) {
-      const chosenIds = selectedPageIds[accId] || [];
+      // Force accId to string to guarantee we find the array
+      const chosenIds = safeSelectedPages[String(accId)] || [];
+      
       accObj.pages = accObj.pages.map(p => ({ 
         ...p, 
-        isSelected: chosenIds.includes(p.pageId) 
+        // ✨ THE FIX: Force both IDs to Strings so they match perfectly!
+        isSelected: chosenIds.some(id => String(id) === String(p.pageId))
       }));
     } else if (accObj.pages?.length) {
       accObj.pages = accObj.pages.map(p => ({ ...p, isSelected: true }));
@@ -115,11 +125,10 @@ const getAccountsForPublish = async (accountIds, selectedPageIds = {}) => {
     accounts.push(accObj);
   }
   
-  // ✨ THE FIX: Sort the accounts array to guarantee Twitter is pushed to the very end of the line
   accounts.sort((a, b) => {
-    if (a.platform === 'twitter' && b.platform !== 'twitter') return 1;  // Push Twitter back
-    if (a.platform !== 'twitter' && b.platform === 'twitter') return -1; // Keep others up front
-    return 0; // Maintain natural order for the rest
+    if (a.platform === 'twitter' && b.platform !== 'twitter') return 1;  
+    if (a.platform !== 'twitter' && b.platform === 'twitter') return -1; 
+    return 0; 
   });
 
   return accounts;
@@ -142,51 +151,71 @@ const withAttemptTimestamp = (platformResults = []) => {
   return platformResults.map(r => ({ ...r, attemptedAt: r.attemptedAt || now }));
 };
 
+// ✨ THE CRON GUARD: Prevents the 1-minute timer from overlapping itself!
+ let isCronRunning = false; 
+
 const processScheduledPosts = async () => {
+  // If the server is still busy uploading a heavy video, skip this minute entirely.
+
+  if (isCronRunning) return; 
+  
+  isCronRunning = true; // Lock the gate
+  
   try {
     const now = new Date();
     
-    // Keep looping one-by-one until all scheduled posts are processed
     while (true) {
-      // ✨ THE FIX: Removed "db." prefix. Now using "Post" directly.
-      const post = await Post.findOneAndUpdate(
+      // 🔒 ATOMIC LOCK: Instantly change to 'published' so no other system can touch it
+      const postDoc = await Post.findOneAndUpdate(
         { status: 'scheduled', scheduledAt: { $lte: now } },
-        { $set: { status: 'publishing', updatedAt: new Date() } },
+        { $set: { status: 'published', updatedAt: new Date() } },
         { new: true } 
       );
 
-      // If there are no more scheduled posts ready to go, break out of the loop
-      if (!post) {
-        break; 
-      }
+      // If no more scheduled posts are found, break the loop
+      if (!postDoc) break; 
 
-      // Now safely process the locked post...
       try {
-        const accountsFull = await getAccountsForPublish(post.accountIds || [], post.selectedPages || {});
+        // Strip Mongoose wrappers so it behaves perfectly for the publisher
+        const post = postDoc.toObject();
+
+        let safeSelectedPages = {};
+        if (post.selectedPages && post.selectedPages instanceof Map) {
+          safeSelectedPages = Object.fromEntries(post.selectedPages);
+        } else if (post.selectedPages) {
+          safeSelectedPages = JSON.parse(JSON.stringify(post.selectedPages));
+        }
+
+        // Pass the perfectly cleaned universal object down to the accounts function
+        const accountsFull = await getAccountsForPublish(post.accountIds || [], safeSelectedPages);
         const result = await publishPostToPlatforms(post, accountsFull);
         
+        // Update the database with the final platform metadata (links, timestamps)
         await Post.updateOne({ id: post.id }, { 
-          status: result.status, 
+          status:          result.status, // Remains 'published', or updates to 'failed' if all platforms crashed
           platformResults: withAttemptTimestamp(result.platformResults),
-          publishedAt: new Date(),
-          lastAttemptAt: new Date(),
-          publishedBy: post.createdBy || post.publishedBy || null
+          publishedAt:     new Date()
         });
+        
       } catch (uploadError) {
-        logger.error(`Scheduled upload failed for post ${post.id}:`, uploadError);
-        await Post.updateOne({ id: post.id }, { 
+        logger.error(`Scheduled upload failed for post ${postDoc.id}:`, uploadError);
+        // Rollback to 'failed' if a catastrophic crash happens during upload
+        await Post.updateOne({ id: postDoc.id }, { 
           status: 'failed', 
-          lastAttemptAt: new Date(),
-          publishError: uploadError.message || 'Scheduled publish failed (server or network issue)'
+          error:  uploadError.message || 'Scheduled publish failed'
         });
       }
     }
   } catch (error) {
     logger.error('Error processing scheduled posts', error);
+  } finally {
+    // ✨ UNLOCK THE GATE: The uploads are 100% finished, the next minute can run normally
+    isCronRunning = false;
   }
 };
-// You can adjust this interval (in milliseconds) if you still want it to run less frequently!
-setInterval(processScheduledPosts, 60000);
+
+// Run scheduled posts processor every minute
+// setInterval(processScheduledPosts, 60000);
 
 const STALE_PUBLISHING_MINUTES = 10;
 const recoverStuckPosts = async () => {
@@ -516,6 +545,7 @@ router.post('/', authMiddleware, async (req, res) => {
     if (postStatus === 'publishing') {
       try {
         const accountsFull = await getAccountsForPublish(accountIds, selectedPages);
+        console.log("accountsFull",accountsFull)
         const result = await publishPostToPlatforms(post, accountsFull);
         post.status = result.status;
         post.platformResults = withAttemptTimestamp(result.platformResults);

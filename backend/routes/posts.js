@@ -12,6 +12,7 @@ const { encrypt, decrypt } = require('../utils/encryption');
 const axios = require('axios');
 
 const router = express.Router();
+const User = require('../models/User');
 
 const sharp = require('sharp');
 
@@ -91,6 +92,7 @@ const formatPost = (post, accounts = []) => ({
   content: post.content,
   mediaUrls: post.mediaUrls || [],
   mediaFormats: post.mediaFormats || {},
+  selectedPages: post.selectedPages || {}, // <--- ADD THIS LINE HERE
   accountIds: post.accountIds || [],
   platforms: post.platforms || [],
   status: post.status,
@@ -128,18 +130,37 @@ const formatPost = (post, accounts = []) => ({
 
 const getAccountsForPublish = async (accountIds, selectedPageIds = {}) => {
   const accounts = [];
+  
+  const safeSelectedPages = selectedPageIds instanceof Map 
+    ? Object.fromEntries(selectedPageIds) 
+    : (selectedPageIds?.toObject ? selectedPageIds.toObject() : selectedPageIds);
+
   for (const accId of accountIds) {
+    // 🔥 THE FIX: Removed the "db." prefix here. It is now just SocialAccount.findOne
     const acc = await SocialAccount.findOne({ id: accId }).select('-_id -__v');
     if (!acc) continue;
-    if (selectedPageIds[accId] && acc.pages?.length) {
-      const chosenIds = selectedPageIds[accId];
-      acc.pages = acc.pages.map(p => ({
-        ...p.toObject(),
-        isSelected: chosenIds.includes(p.pageId)
+    
+    let accObj = acc.toObject ? acc.toObject() : acc;
+    
+    if (accObj.platform === 'facebook' && accObj.pages?.length) {
+      const chosenIds = safeSelectedPages[accId] || [];
+      accObj.pages = accObj.pages.map(p => ({ 
+        ...p, 
+        isSelected: chosenIds.includes(p.pageId) 
       }));
+    } else if (accObj.pages?.length) {
+      accObj.pages = accObj.pages.map(p => ({ ...p, isSelected: true }));
     }
-    accounts.push(acc);
+    
+    accounts.push(accObj);
   }
+  
+  accounts.sort((a, b) => {
+    if (a.platform === 'twitter' && b.platform !== 'twitter') return 1;
+    if (a.platform !== 'twitter' && b.platform === 'twitter') return -1;
+    return 0;
+  });
+
   return accounts;
 };
 
@@ -165,6 +186,12 @@ const getPageTokenForPost = (account, platformPostId) => {
   return decrypt(page.pageAccessToken);
 };
 
+
+const withAttemptTimestamp = (platformResults = []) => {
+  const now = new Date();
+  return platformResults.map(r => ({ ...r, attemptedAt: r.attemptedAt || now }));
+};
+
 // ════════════════════════════════════════════════════════════
 // Check and Process Scheduled Posts
 // ════════════════════════════════════════════════════════════
@@ -176,6 +203,7 @@ const processScheduledPosts = async () => {
       scheduledAt: { $lte: now }
     });
 
+    console.log("posting from post.js file")
     for (const post of scheduledPosts) {
       const accountsFull = await getAccountsForPublish(post.accountIds || []);
       const result = await publishPostToPlatforms(post, accountsFull);
@@ -191,290 +219,173 @@ const processScheduledPosts = async () => {
   }
 };
 
-// Run scheduled posts processor every minute
-setInterval(processScheduledPosts, 60000);
 
-// ════════════════════════════════════════════════════════════
-// GET /api/posts - Get All Posts (Including YouTube Sync)
+// // Run scheduled posts processor every minute
+ setInterval(processScheduledPosts, 60000);
+
+// GET /api/posts - Get All Posts (Ultra-Fast 2-Pass Paginated)
 // ════════════════════════════════════════════════════════════
 router.get('/', authMiddleware, async (req, res) => {
   try {
-    const query = { userId: req.user.id };
-    if (req.query.status) query.status = req.query.status;
-
-    const dbPosts = await Post.find(query).sort({ createdAt: -1 }).select('-_id -__v');
-    const allAccounts = await SocialAccount.find({ userId: req.user.id, isActive: true });
+    const skipLive = req.query.skipLive === 'true';
     
+    // ── 1. Build Query & Pagination ──
+    const query = { userId: req.user.id };
+    const conditions = [];
+
+    if (req.query.status && req.query.status !== 'all') query.status = req.query.status;
+    if (req.query.platform && req.query.platform !== 'all') query.platforms = req.query.platform;
+    if (req.query.channel && req.query.channel !== 'all') {
+      conditions.push({ $or: [{ accountIds: req.query.channel }, { 'platformResults.pageId': req.query.channel }, { 'platformResults.accountId': req.query.channel }] });
+    }
+    if (req.query.search && req.query.search.trim() !== '') {
+      const searchRegex = new RegExp(req.query.search, 'i');
+      conditions.push({ $or: [{ content: searchRegex }, { youtubeTitle: searchRegex }, { 'platformResults.pageName': searchRegex }] });
+    }
+    if (conditions.length > 0) query.$and = conditions;
+
+    const page  = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 10;
+    const skip  = (page - 1) * limit;
+
+    const allAccounts = await SocialAccount.find({ userId: req.user.id, isActive: true });
+    const currentUser = await User.findOne({ id: req.user.id }).select('name email');
+    const publisherInfo = { name: currentUser?.name || req.user.name, email: currentUser?.email || req.user.email };
+
+    // 🚀 PASS 1: FAST LOCAL FETCH (Skip Live) 
+    if (skipLive) {
+      const totalPosts = await Post.countDocuments(query);
+      const paginatedPosts = await Post.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit).select('-_id -__v');
+      
+      const fastResult = [];
+      for (const post of paginatedPosts) {
+        const accounts = [];
+        for (const accId of post.accountIds || []) {
+          const acc = allAccounts.find(a => a.id === accId);
+          if (acc) accounts.push(safeAccount(acc));
+        }
+        fastResult.push({ ...formatPost(post, accounts, publisherInfo), platformResults: post.platformResults || [] });
+      }
+      
+      // Return instantly in the exact shape React wants
+      return res.json({ posts: fastResult, pagination: { total: totalPosts, page, limit, totalPages: Math.ceil(totalPosts / limit) } });
+    }
+
+    // 🤫 PASS 2: SILENT LIVE FETCH
     const fbAccounts = allAccounts.filter(a => a.platform === 'facebook');
     const igAccounts = allAccounts.filter(a => a.platform === 'instagram');
-    const ytAccounts = allAccounts.filter(a => a.platform === 'youtube'); // 🆕 Added YouTube accounts
+    const ytAccounts = allAccounts.filter(a => a.platform === 'youtube');
 
-    // ── 1. Fetch Facebook Data ─────────────────────────────────
     const fbPostMetaMap = {};
-    for (const account of fbAccounts) {
-      for (const page of account.pages || []) {
-        if (!page.pageAccessToken) continue;
-        try {
-          const pageToken = decrypt(page.pageAccessToken);
-          const fbRes = await axios.get(
-            `https://graph.facebook.com/v19.0/${page.pageId}/feed`,
-            {
-              params: {
-                fields: 'id,message,story,created_time,full_picture,permalink_url,likes.summary(true),comments.summary(true)',
-                limit: 100,
-                access_token: pageToken,
-              },
-            }
-          );
-          for (const fbPost of fbRes.data?.data || []) {
-            fbPostMetaMap[fbPost.id] = {
-              accountId:    account.id,
-              accountName:  account.accountName,
-              pageId:       page.pageId,
-              pageName:     page.pageName,
-              content:      fbPost.message || fbPost.story || '',
-              mediaUrls:    fbPost.full_picture ? [fbPost.full_picture] : [],
-              createdTime:  fbPost.created_time,
-              permalinkUrl: fbPost.permalink_url || null,
-              likes:        fbPost.likes?.summary?.total_count    || 0,
-              comments:     fbPost.comments?.summary?.total_count || 0,
-            };
-          }
-        } catch (err) {
-          logger.info(`FB page fetch failed: ${err.message}`);
-        }
-      }
-    }
-
-    // ── 2. Fetch Instagram Data ────────────────────────────────
     const igPostMetaMap = {};
-    for (const account of igAccounts) {
-      const page = (account.pages || [])[0];
-      if (!page?.pageAccessToken) continue;
-      try {
-        const pageToken = decrypt(page.pageAccessToken);
-        const igAccountId = account.accountId;
-        const igRes = await axios.get(
-          `https://graph.facebook.com/v19.0/${igAccountId}/media`,
-          {
-            params: {
-              fields: 'id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count',
-              limit: 100,
-              access_token: pageToken,
-            },
-          }
-        );
-        for (const igPost of igRes.data?.data || []) {
-          igPostMetaMap[igPost.id] = {
-            accountId:    account.id,
-            accountName:  account.accountName,
-            igUsername:   account.igUsername || '',
-            pageId:       page.pageId,
-            pageName:     page.pageName,
-            content:      igPost.caption    || '',
-            mediaType:    igPost.media_type || 'IMAGE',
-            mediaUrls:    igPost.media_url  ? [igPost.media_url] : [],
-            thumbnailUrl: igPost.thumbnail_url || null,
-            createdTime:  igPost.timestamp,
-            permalinkUrl: igPost.permalink  || null,
-            likes:        igPost.like_count     || 0,
-            comments:     igPost.comments_count || 0,
-          };
-        }
-      } catch (err) {
-        logger.info(`IG fetch failed: ${err.message}`);
-      }
-    }
-
-    // ── 3. Fetch YouTube Data 🆕 ───────────────────────────────
     const ytPostMetaMap = {};
-    if (ytAccounts.length > 0) {
-      const { google } = require('googleapis');
-      
-      for (const account of ytAccounts) {
-        try {
-          const oauth2Client = new google.auth.OAuth2(
-            process.env.YOUTUBE_CLIENT_ID,
-            process.env.YOUTUBE_CLIENT_SECRET
-          );
-          
-          oauth2Client.setCredentials({
-            access_token: decrypt(account.accessToken),
-            refresh_token: account.refreshToken ? decrypt(account.refreshToken) : undefined
-          });
 
-          const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
-
-          // Get the user's latest 50 uploaded videos
-          const searchRes = await youtube.search.list({
-            part: 'snippet',
-            forMine: true,
-            type: 'video',
-            maxResults: 50,
-            order: 'date'
-          });
-
-          const videoIds = searchRes.data.items.map(item => item.id.videoId).filter(Boolean);
-
-          if (videoIds.length > 0) {
-            // Fetch statistics (likes, comments, views) for those specific videos
-            const videoRes = await youtube.videos.list({
-              part: 'snippet,statistics',
-              id: videoIds.join(',')
+    // Only run heavy social media syncing on Page 1
+    if (page === 1 && !req.query.search) {
+      // -- Facebook Sync --
+      for (const account of fbAccounts) {
+        for (const page of account.pages || []) {
+          if (!page.pageAccessToken) continue;
+          try {
+            const fbRes = await axios.get(`https://graph.facebook.com/v19.0/${page.pageId}/feed`, {
+              params: { fields: 'id,message,story,created_time,full_picture,permalink_url,likes.summary(true),comments.summary(true)', limit: 10, access_token: decrypt(page.pageAccessToken) }
             });
-
-            for (const ytPost of videoRes.data.items || []) {
-              ytPostMetaMap[ytPost.id] = {
-                accountId:    account.id,
-                accountName:  account.name || account.accountName,
-                youtubeTitle: ytPost.snippet.title,
-                content:      ytPost.snippet.description || '',
-                mediaUrls:    ytPost.snippet.thumbnails?.high?.url ? [ytPost.snippet.thumbnails.high.url] : [], // Use YT thumbnail as media preview
-                mediaType:    'VIDEO',
-                createdTime:  ytPost.snippet.publishedAt,
-                permalinkUrl: `https://www.youtube.com/watch?v=${ytPost.id}`,
-                likes:        Number(ytPost.statistics?.likeCount) || 0,
-                comments:     Number(ytPost.statistics?.commentCount) || 0,
-                views:        Number(ytPost.statistics?.viewCount) || 0 // Added views tracking!
-              };
+            for (const fbPost of fbRes.data?.data || []) {
+              fbPostMetaMap[fbPost.id] = { accountId: account.id, pageId: page.pageId, pageName: page.pageName, content: fbPost.message || fbPost.story || '', mediaUrls: fbPost.full_picture ? [fbPost.full_picture] : [], createdTime: fbPost.created_time, permalinkUrl: fbPost.permalink_url, likes: fbPost.likes?.summary?.total_count || 0, comments: fbPost.comments?.summary?.total_count || 0 };
             }
-          }
-        } catch (err) {
-          logger.info(`YouTube fetch failed for ${account.name || account.accountName}: ${err.message}`);
+          } catch (err) {}
         }
       }
-    }
 
-    // ── 4. Sync New Posts to Database ──────────────────────────
-    const dbPlatformPostIds = new Set();
-    for (const post of dbPosts) {
-      for (const r of post.platformResults || []) {
-        if (r.platformPostId) dbPlatformPostIds.add(r.platformPostId);
+      // -- Instagram Sync --
+      for (const account of igAccounts) {
+        const page = (account.pages || [])[0];
+        if (!page?.pageAccessToken) continue;
+        try {
+          const igRes = await axios.get(`https://graph.facebook.com/v19.0/${account.accountId}/media`, {
+            params: { fields: 'id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count', limit: 10, access_token: decrypt(page.pageAccessToken) }
+          });
+          for (const igPost of igRes.data?.data || []) {
+            igPostMetaMap[igPost.id] = { accountId: account.id, pageId: page.pageId, pageName: page.pageName, content: igPost.caption || '', mediaType: igPost.media_type || 'IMAGE', mediaUrls: igPost.media_url ? [igPost.media_url] : [], thumbnailUrl: igPost.thumbnail_url, createdTime: igPost.timestamp, permalinkUrl: igPost.permalink, likes: igPost.like_count || 0, comments: igPost.comments_count || 0 };
+          }
+        } catch (err) {}
       }
+
+      // -- YouTube Sync (Bypass Quota Limit!) --
+      if (ytAccounts.length > 0) {
+        const { google } = require('googleapis');
+        for (const account of ytAccounts) {
+          try {
+            const oauth2Client = new google.auth.OAuth2(process.env.YOUTUBE_CLIENT_ID, process.env.YOUTUBE_CLIENT_SECRET);
+            oauth2Client.setCredentials({ access_token: decrypt(account.accessToken), refresh_token: account.refreshToken ? decrypt(account.refreshToken) : undefined });
+            const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
+            
+            const channelRes = await youtube.channels.list({ part: 'contentDetails', mine: true });
+            const uploadsPlaylistId = channelRes.data.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
+
+            if (uploadsPlaylistId) {
+              const playlistRes = await youtube.playlistItems.list({ part: 'snippet', playlistId: uploadsPlaylistId, maxResults: 10 });
+              const videoIds = playlistRes.data.items.map(item => item.snippet.resourceId.videoId).filter(Boolean);
+
+              if (videoIds.length > 0) {
+                const videoRes = await youtube.videos.list({ part: 'snippet,statistics', id: videoIds.join(',') });
+                for (const ytPost of videoRes.data.items || []) {
+                  ytPostMetaMap[ytPost.id] = { accountId: account.id, youtubeTitle: ytPost.snippet.title, content: ytPost.snippet.description || '', mediaUrls: ytPost.snippet.thumbnails?.high?.url ? [ytPost.snippet.thumbnails.high.url] : [], mediaType: 'VIDEO', createdTime: ytPost.snippet.publishedAt, permalinkUrl: `https://www.youtube.com/watch?v=${ytPost.id}`, likes: Number(ytPost.statistics?.likeCount) || 0, comments: Number(ytPost.statistics?.commentCount) || 0, views: Number(ytPost.statistics?.viewCount) || 0 };
+                }
+              }
+            }
+          } catch (err) {}
+        }
+      }
+
+      // -- Save New Live Posts to DB --
+      const distinctDbIds = await Post.distinct('platformResults.platformPostId', { userId: req.user.id });
+      const dbPlatformPostIds = new Set(distinctDbIds);
+
+      const createSyncPost = async (meta, platform, postIdStr, type) => {
+        if (dbPlatformPostIds.has(postIdStr)) return;
+        const postTime = new Date(meta.createdTime);
+        const newPost = new Post({
+          id: uuidv4(), userId: req.user.id, content: meta.content, mediaUrls: meta.mediaUrls, mediaType: type, youtubeTitle: meta.youtubeTitle || null, accountIds: [meta.accountId], platforms: [platform], status: 'published', publishedAt: postTime, syncedFromPlatform: true,
+          platformResults: [{ platform, accountId: meta.accountId, platformPostId: postIdStr, status: 'published', publishedAt: postTime, pages: meta.pageId ? [{ pageId: meta.pageId, pageName: meta.pageName, postId: postIdStr, status: 'published' }] : [] }],
+          createdAt: postTime, updatedAt: new Date()
+        });
+        try { await newPost.save(); dbPlatformPostIds.add(postIdStr); } catch (err) {}
+      };
+
+      for (const [id, meta] of Object.entries(fbPostMetaMap)) if (meta.content.trim()) await createSyncPost(meta, 'facebook', id, null);
+      for (const [id, meta] of Object.entries(igPostMetaMap)) if (meta.content.trim() || meta.mediaUrls.length) await createSyncPost(meta, 'instagram', id, meta.mediaType);
+      for (const [id, meta] of Object.entries(ytPostMetaMap)) await createSyncPost(meta, 'youtube', id, 'VIDEO');
     }
 
-    // Sync Facebook
-    for (const [fbPostId, meta] of Object.entries(fbPostMetaMap)) {
-      if (dbPlatformPostIds.has(fbPostId)) continue;
-      if (!meta.content.trim()) continue;
-
-      const postId = uuidv4();
-      const postTime = new Date(meta.createdTime);
-
-      const newPost = new Post({
-        id: postId, userId: req.user.id, content: meta.content, mediaUrls: meta.mediaUrls,
-        accountIds: [meta.accountId], platforms: ['facebook'], status: 'published', publishedAt: postTime, syncedFromPlatform: true,
-        platformResults: [{ platform: 'facebook', accountId: meta.accountId, platformPostId: fbPostId, status: 'published', publishedAt: postTime, pages: [{ pageId: meta.pageId, pageName: meta.pageName, postId: fbPostId, status: 'published', error: null }] }],
-        createdAt: postTime, updatedAt: new Date(),
-      });
-
-      try { await newPost.save(); dbPlatformPostIds.add(fbPostId); } catch (err) {}
-    }
-
-    // Sync Instagram
-    for (const [igPostId, meta] of Object.entries(igPostMetaMap)) {
-      if (dbPlatformPostIds.has(igPostId)) continue;
-      if (!meta.content.trim() && !meta.mediaUrls.length) continue;
-
-      const postId = uuidv4();
-      const postTime = new Date(meta.createdTime);
-
-      const newIGPost = new Post({
-        id: postId, userId: req.user.id, content: meta.content, mediaUrls: meta.mediaUrls, mediaType: meta.mediaType,
-        accountIds: [meta.accountId], platforms: ['instagram'], status: 'published', publishedAt: postTime, syncedFromPlatform: true,
-        platformResults: [{ platform: 'instagram', accountId: meta.accountId, platformPostId: igPostId, status: 'published', publishedAt: postTime, pages: [{ pageId: meta.pageId, pageName: meta.pageName, postId: igPostId, status: 'published', error: null }] }],
-        createdAt: postTime, updatedAt: new Date(),
-      });
-
-      try { await newIGPost.save(); dbPlatformPostIds.add(igPostId); } catch (err) {}
-    }
-
-    // Sync YouTube 🆕
-    for (const [ytPostId, meta] of Object.entries(ytPostMetaMap)) {
-      if (dbPlatformPostIds.has(ytPostId)) continue;
-
-      const postId = uuidv4();
-      const postTime = new Date(meta.createdTime);
-
-      const newYTPost = new Post({
-        id: postId, 
-        userId: req.user.id, 
-        content: meta.content, 
-        youtubeTitle: meta.youtubeTitle,
-        mediaUrls: meta.mediaUrls, 
-        mediaType: 'VIDEO',
-        accountIds: [meta.accountId], 
-        platforms: ['youtube'], 
-        status: 'published', 
-        publishedAt: postTime, 
-        syncedFromPlatform: true,
-        platformResults: [{ 
-          platform: 'youtube', 
-          accountId: meta.accountId, 
-          platformPostId: ytPostId, 
-          status: 'published', 
-          publishedAt: postTime, 
-          pages: [] 
-        }],
-        createdAt: postTime, 
-        updatedAt: new Date(),
-      });
-
-      try { await newYTPost.save(); dbPlatformPostIds.add(ytPostId); } catch (err) {}
-    }
-
-    // ── 5. Assemble and Return Final Results ───────────────────
-    const allPosts = await Post.find(query).sort({ createdAt: -1 }).select('-_id -__v');
+    // ── 5. FETCH STRICTLY PAGINATED POSTS FROM DB ──
+    // This is the bug fix that stops the lag! It only pulls 10 posts!
+    const finalTotalPosts = await Post.countDocuments(query);
+    const paginatedLivePosts = await Post.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit).select('-_id -__v');
+    
     const result = [];
-
-    for (const post of allPosts) {
+    for (const post of paginatedLivePosts) {
       const accounts = [];
       for (const accId of post.accountIds || []) {
-        const acc = await SocialAccount.findOne({ id: accId });
+        const acc = allAccounts.find(a => a.id === accId);
         if (acc) accounts.push(safeAccount(acc));
       }
 
       const enrichedResults = (post.platformResults || []).map(r => {
-        // Cascade down to find the right metadata source
-        const fbMeta = r.platformPostId ? (fbPostMetaMap[r.platformPostId] || null) : null;
-        const igMeta = r.platformPostId ? (igPostMetaMap[r.platformPostId] || null) : null;
-        const ytMeta = r.platformPostId ? (ytPostMetaMap[r.platformPostId] || null) : null;
-        
-        const meta = fbMeta || igMeta || ytMeta;
-
+        const meta = (r.platformPostId ? fbPostMetaMap[r.platformPostId] : null) || (r.platformPostId ? igPostMetaMap[r.platformPostId] : null) || (r.platformPostId ? ytPostMetaMap[r.platformPostId] : null);
         return {
-          platform:       r.platform,
-          accountId:      r.accountId,
-          platformPostId: r.platformPostId || null,
-          status:         r.status,
-          error:          r.error          || null,
-          publishedAt:    r.publishedAt ? new Date(r.publishedAt).toISOString() : null,
-          pageName:       meta?.pageName     || null,
-          pageId:         meta?.pageId       || null,
-          permalinkUrl:   meta?.permalinkUrl || null,
-          likes:          meta?.likes        ?? null,
-          comments:       meta?.comments     ?? null,
-          views:          meta?.views        ?? null, // 🆕 Expose views to the frontend!
-          mediaType:      meta?.mediaType    || null,
-          thumbnailUrl:   meta?.thumbnailUrl || null,
-          igUsername:     igMeta?.igUsername   || null,
-          pages: (r.pages || []).map(p => ({
-            pageId:   p.pageId,
-            pageName: p.pageName,
-            postId:   p.postId || null,
-            status:   p.status,
-            error:    p.error  || null,
-          })),
+          platform: r.platform, accountId: r.accountId, platformPostId: r.platformPostId || null, status: r.status, error: r.error || null, publishedAt: r.publishedAt ? new Date(r.publishedAt).toISOString() : null,
+          pageName: meta?.pageName || null, permalinkUrl: meta?.permalinkUrl || null, likes: meta?.likes ?? null, comments: meta?.comments ?? null, views: meta?.views ?? null, thumbnailUrl: meta?.thumbnailUrl || null,
+          pages: (r.pages || []).map(p => ({ pageId: p.pageId, pageName: p.pageName, postId: p.postId || null, status: p.status, error: p.error || null }))
         };
       });
 
-      result.push({
-        ...formatPost(post, accounts),
-        platformResults: enrichedResults,
-      });
+      result.push({ ...formatPost(post, accounts, publisherInfo), platformResults: enrichedResults });
     }
 
-    res.json(result);
+    // Return the perfectly formatted JSON object so React doesn't blank out!
+    res.json({ posts: result, pagination: { total: finalTotalPosts, page, limit, totalPages: Math.ceil(finalTotalPosts / limit) } });
+    
   } catch (error) {
     logger.error('Failed to get posts', error);
     res.status(500).json({ detail: 'Failed to get posts' });
@@ -485,7 +396,6 @@ router.get('/', authMiddleware, async (req, res) => {
 // GET /api/posts/:postId
 // ════════════════════════════════════════════════════════════
 // ════════════════════════════════════════════════════════════
-// GET /api/posts/:postId - Fetch a Particular Post By ID
 // ════════════════════════════════════════════════════════════
 router.get('/:postId', authMiddleware, async (req, res) => {
   try {
@@ -528,8 +438,6 @@ router.get('/:postId', authMiddleware, async (req, res) => {
     res.status(500).json({ detail: 'Failed to get post' });
   }
 });
-// ════════════════════════════════════════════════════════════
-// POST /api/posts - Create Post with Scheduling
 // ════════════════════════════════════════════════════════════
 // POST /api/posts - Create Post
 // ════════════════════════════════════════════════════════════
@@ -597,6 +505,7 @@ router.post('/', authMiddleware, async (req, res) => {
       mediaFormats,
       accountIds,
       platforms,
+      selectedPages: selectedPages, // ✨ THE FIX: I accidentally removed this earlier! This caused the scheduler to forget pages!
       status:       postStatus,
       scheduledAt:  scheduledDate,
       platformResults: [],
@@ -613,24 +522,35 @@ router.post('/', authMiddleware, async (req, res) => {
 
     await post.save();
 
-    // ── Publish immediately if status is 'publishing' ────────
+   // ── Publish immediately if status is 'publishing' ────────
     if (postStatus === 'publishing') {
-      const accountsFull = await getAccountsForPublish(accountIds, selectedPages);
-      // post already has all YouTube fields attached — publishService reads them directly
-      const result = await publishPostToPlatforms(post, accountsFull);
+      try {
+        const accountsFull = await getAccountsForPublish(accountIds, selectedPages);
+        // ✨ THE FIX: We 'await' the publisher directly so the API blocks until it finishes
+        const result = await publishPostToPlatforms(post, accountsFull);
+        
+        post.status = result.status; // This will now be 'published' or 'failed'
+        post.platformResults = withAttemptTimestamp(result.platformResults);
+        post.publishedAt = new Date();
 
-      post.status          = result.status;
-      post.platformResults = result.platformResults;
-      post.publishedAt     = new Date();
-
-      await Post.updateOne({ id: postId }, {
-        status:          result.status,
-        platformResults: result.platformResults,
-        publishedAt:     post.publishedAt,
-      });
+        await Post.updateOne({ id: postId }, { 
+          status: post.status, 
+          platformResults: post.platformResults, 
+          publishedAt: post.publishedAt 
+        });
+      } catch (publishError) {
+        logger.error(`Publish failed:`, publishError);
+        post.status = 'failed';
+        await Post.updateOne({ id: postId }, { status: 'failed' });
+      }
     }
-
-    res.status(201).json(formatPost(post, []));
+    
+    const currentUser = await User.findOne({ id: req.user.id });
+    const publisherInfo = { name: currentUser?.name || req.user.name, email: currentUser?.email || req.user.email };
+    
+    // The JSON response will now contain the final status instead of 'publishing'
+    return res.status(201).json(formatPost(post, [], publisherInfo));
+    
   } catch (error) {
     logger.error('Failed to create post', error);
     res.status(500).json({ detail: 'Failed to create post' });
@@ -769,6 +689,16 @@ router.put('/:postId', authMiddleware, async (req, res) => {
     post.mediaFormats = mediaFormats ?? post.mediaFormats;
     post.accountIds   = accountIds ?? post.accountIds;
 
+    if (selectedPages !== undefined) {
+      post.selectedPages = selectedPages;
+      post.markModified('selectedPages'); 
+    }
+
+    if (scheduledAt !== undefined) {
+      post.scheduledAt = scheduledAt ? new Date(scheduledAt) : null;
+    }
+Sa
+
     if (youtubeTitle !== undefined)       post.youtubeTitle = youtubeTitle;
     if (youtubeTags !== undefined)        post.youtubeTags = Array.isArray(youtubeTags) ? youtubeTags : [];
     if (youtubeCategory !== undefined)    post.youtubeCategory = youtubeCategory;
@@ -841,29 +771,30 @@ router.post('/:postId/publish', authMiddleware, async (req, res) => {
   try {
     const post = await Post.findOne({ id: req.params.postId, userId: req.user.id });
     if (!post) return res.status(404).json({ detail: 'Post not found' });
-
     const { selectedPages = {} } = req.body;
+
     const accountsFull = await getAccountsForPublish(post.accountIds || [], selectedPages);
+    await Post.updateOne({ id: req.params.postId }, { status: 'publishing', updatedAt: new Date() });
 
-    await Post.updateOne({ id: req.params.postId }, { status: 'publishing' });
-    const result = await publishPostToPlatforms(post, accountsFull);
-
-    await Post.updateOne({ id: req.params.postId }, {
-      status:          result.status,
-      platformResults: result.platformResults,
-      publishedAt:     new Date()
-    });
-
-    res.json({
-      message: 'Post published',
-      status: result.status,
-      platformResults: result.platformResults
-    });
-  } catch (error) {
-    res.status(500).json({ detail: 'Failed to publish post' });
+    try {
+      // ✨ THE FIX: Block the API until the platforms finish
+      const result = await publishPostToPlatforms(post, accountsFull);
+      const timestampedResults = withAttemptTimestamp(result.platformResults);
+      
+      await Post.updateOne({ id: req.params.postId }, {
+        status: result.status, platformResults: timestampedResults, publishedAt: new Date()
+      });
+      
+      // Respond strictly with the final result
+      return res.json({ message: 'Post published', status: result.status, platformResults: timestampedResults });
+    } catch (publishError) {
+      await Post.updateOne({ id: req.params.postId }, { status: 'failed' });
+      return res.status(500).json({ detail: 'Failed to publish post' });
+    }
+  } catch (error) { 
+    res.status(500).json({ detail: 'Failed to trigger publish' }); 
   }
 });
-
 // ════════════════════════════════════════════════════════════════
 // POST /upload-chunk - Chunked upload for large files
 // ════════════════════════════════════════════════════════════════
