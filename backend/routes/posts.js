@@ -221,7 +221,7 @@ const processScheduledPosts = async () => {
 
 
 // // Run scheduled posts processor every minute
- setInterval(processScheduledPosts, 60000);
+//  setInterval(processScheduledPosts, 60000);
 
 // GET /api/posts - Get All Posts (Ultra-Fast 2-Pass Paginated)
 // ════════════════════════════════════════════════════════════
