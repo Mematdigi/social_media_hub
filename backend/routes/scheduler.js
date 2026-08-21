@@ -215,7 +215,7 @@ const processScheduledPosts = async () => {
 };
 
 // Run scheduled posts processor every minute
-// setInterval(processScheduledPosts, 60000);
+ setInterval(processScheduledPosts, 5 * 60000);
 
 const STALE_PUBLISHING_MINUTES = 10;
 const recoverStuckPosts = async () => {

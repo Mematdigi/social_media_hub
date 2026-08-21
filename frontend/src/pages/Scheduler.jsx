@@ -23,14 +23,7 @@ export default function Scheduler() {
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [filter, setFilter] = useState('all');
 
-  useEffect(() => {
-    fetchPosts();
-  }, [filter]);
-
-  useEffect(() => {
-    fetchCalendarData();
-  }, [currentMonth]);
-
+ 
   const fetchPosts = async () => {
     try {
       const response = await postsAPI.getAll(filter === 'all' ? null : filter);
@@ -53,6 +46,15 @@ export default function Scheduler() {
       console.error('Failed to load calendar data');
     }
   };
+
+   useEffect(() => {
+    fetchPosts();
+  }, [filter]);
+
+  useEffect(() => {
+    fetchCalendarData();
+  }, [currentMonth]);
+
 
   const handlePublish = async (postId) => {
     try {
