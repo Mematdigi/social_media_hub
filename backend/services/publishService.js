@@ -406,10 +406,10 @@ facebook: async ({ pageToken, pageId, content, mediaUrls, mediaType }) => {
           const apiError = thumbErr.response?.data?.error?.message || thumbErr.message;
           
           // ✨ THE FIX: Suppress the permissions error so it doesn't look like a crash.
-          if (apiError.toLowerCase().includes('permissions')) {
-            logger.warn('▶️', `⚠️ Thumbnail skipped: YouTube Channel is not verified for custom thumbnails yet. Video published with default thumbnail!`);
+    if (apiError.toLowerCase().includes('permissions')) {
+            console.warn(`⚠️ Thumbnail skipped: YouTube Channel is not verified for custom thumbnails yet. Video published with default thumbnail!`);
           } else {
-            logger.warn('▶️', `⚠️ Thumbnail skipped due to API error: ${apiError}`);
+            console.warn(`⚠️ Thumbnail skipped due to API error: ${apiError}`);
           }
         }
       }
