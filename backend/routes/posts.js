@@ -925,7 +925,7 @@ router.post('/upload-chunk', authMiddleware, chunkUpload.single('file'), async (
           mimetype: 'image/jpeg',
           size: stats.size
         });
-      } catch (sharpError) {
+} catch (sharpError) {
         logger.error(`[UPLOAD] Sharp error: ${sharpError.message}`);
         fs.rmSync(sessionDir, { recursive: true });
         return res.status(500).json({
@@ -933,16 +933,16 @@ router.post('/upload-chunk', authMiddleware, chunkUpload.single('file'), async (
           detail: `Image processing failed: ${sharpError.message}`
         });
       }
-    }
-  } catch (error) {
+    } // <-- Closes the if/else (isVideo) block
+
+  } catch (error) { // <-- Closes the main 'try' block for the route
     logger.error(`[CHUNK] Error: ${error.message}`);
     res.status(500).json({
       success: false,
       detail: error.message || 'Failed to upload chunk'
     });
   }
-});
-
+}); 
 // ════════════════════════════════════════════════════════════════
 // DELETE /upload-chunk/:fileId - Cancel chunked upload
 // ════════════════════════════════════════════════════════════════
