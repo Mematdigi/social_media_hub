@@ -167,8 +167,7 @@ router.post('/:messageId/reply', authMiddleware, async (req, res) => {
         repliedAt: new Date(),
         replyContent: content
       }
-    );
-    
+    );    
     logger.info('💬', `Reply sent on ${message.platform}`);
     res.json({ message: 'Reply sent successfully' });
   } catch (error) {
