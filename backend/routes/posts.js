@@ -851,49 +851,60 @@ router.post('/upload-chunk', authMiddleware, chunkUpload.single('file'), async (
         progress: Math.round((uploadedChunks.length / totalChunks) * 100)
       });
     }
+// ✅ ALL CHUNKS RECEIVED - Assemble and process
+   logger.info(`[CHUNK] All chunks received for ${fileIdentifier}, assembling safely...`);
 
-    // ✅ ALL CHUNKS RECEIVED - Assemble and process
-    logger.info(`[CHUNK] All chunks received for ${fileIdentifier}, assembling...`);
+    // 1. Sort the chunk filenames (do NOT read them into memory yet!)
+    const sortedChunkFiles = uploadedChunks.sort((a, b) => {
+      const aNum = parseInt(a.split('_')[1]);
+      const bNum = parseInt(b.split('_')[1]);
+      return aNum - bNum;
+    });
 
-    // Sort and concatenate chunks
-    const sortedChunks = uploadedChunks
-      .sort((a, b) => {
-        const aNum = parseInt(a.split('_')[1]);
-        const bNum = parseInt(b.split('_')[1]);
-        return aNum - bNum;
-      })
-      .map(f => fs.readFileSync(path.join(sessionDir, f)));
-
-    const fileBuffer = Buffer.concat(sortedChunks);
     const isVideo = mimeType?.startsWith('video');
     const timestamp = Date.now();
-    const cleanName = path.parse(originalName).name;
+    
+    // 🌟 THE FIX: Safely truncate the original name to a maximum of 100 chars
+    // This prevents OS-level "ENAMETOOLONG" errors if a user uploads a file with a massive name
+    const rawName = path.parse(originalName).name;
+    const cleanName = rawName.substring(0, 100);
 
     if (isVideo) {
-      // VIDEO: Save as-is
+      // 🌟 The RAM-Safe Video Assembler
       const filename = `${timestamp}-${cleanName}.mp4`;
       const filepath = path.join(__dirname, '../uploads', filename);
 
-      fs.writeFileSync(filepath, fileBuffer);
+      // Create a fresh file
+      if (fs.existsSync(filepath)) fs.unlinkSync(filepath);
 
-      const fileUrl = `https://${req.get('host')}/uploads/${filename}`;
-      const stats = fs.statSync(filepath);
+      // Read and append chunks 1-by-1 directly to the disk.
+      // This uses almost 0 RAM, no matter how massive the video is!
+      for (const chunkFile of sortedChunkFiles) {
+        const chunkPath = path.join(sessionDir, chunkFile);
+        const chunkData = fs.readFileSync(chunkPath); // Loads only a tiny 5MB chunk into RAM
+        fs.appendFileSync(filepath, chunkData);       // Instantly flushes it to the hard drive
+      }
 
-      // Clean up chunks
+      // Clean up the temporary chunks folder
       fs.rmSync(sessionDir, { recursive: true });
 
-      logger.info(`[UPLOAD] Video assembled: ${filename} (${stats.size} bytes)`);
+      const stats = fs.statSync(filepath);
+      logger.info(`[UPLOAD] Video assembled safely: ${filename} (${stats.size} bytes)`);
 
       return res.status(200).json({
         success: true,
-        url: fileUrl,
+        url: `https://${req.get('host')}/uploads/${filename}`,
         filename: filename,
         mediaType: 'VIDEO',
         mimetype: 'video/mp4',
         size: stats.size
       });
+      
     } else {
-      // IMAGE: Convert to baseline JPEG
+      // IMAGE: Images are very small, so reading them into a Buffer is perfectly safe
+      const sortedBuffers = sortedChunkFiles.map(f => fs.readFileSync(path.join(sessionDir, f)));
+      const fileBuffer = Buffer.concat(sortedBuffers);
+      
       const filename = `${timestamp}-${cleanName}.jpg`;
       const filepath = path.join(__dirname, '../uploads', filename);
 
@@ -925,7 +936,7 @@ router.post('/upload-chunk', authMiddleware, chunkUpload.single('file'), async (
           mimetype: 'image/jpeg',
           size: stats.size
         });
-} catch (sharpError) {
+      } catch (sharpError) {
         logger.error(`[UPLOAD] Sharp error: ${sharpError.message}`);
         fs.rmSync(sessionDir, { recursive: true });
         return res.status(500).json({
@@ -942,7 +953,8 @@ router.post('/upload-chunk', authMiddleware, chunkUpload.single('file'), async (
       detail: error.message || 'Failed to upload chunk'
     });
   }
-}); 
+});
+    
 // ════════════════════════════════════════════════════════════════
 // DELETE /upload-chunk/:fileId - Cancel chunked upload
 // ════════════════════════════════════════════════════════════════
