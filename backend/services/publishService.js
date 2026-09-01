@@ -461,6 +461,13 @@ const publishIGContainer = async (igAccountId, creationId, pageToken) => {
   });
   const publishData = await publishRes.json();
 
+  // ✨ THE SURGICAL PATCH: Only intercepts the "Media ID" lag ✨
+  if (publishData.error && publishData.error.message.includes('Media ID is not available') && attempt < 3) {
+    logger.warn('📷', `Meta servers lagging. Pausing for 5 seconds... (Attempt ${attempt}/3)`);
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    return await publishIGContainer(igAccountId, creationId, pageToken, attempt + 1);
+  }
+
   if (publishData.error) throw new Error(`Instagram publish: ${publishData.error.message}`);
   if (!publishData.id)   throw new Error(`Instagram publish failed: ${JSON.stringify(publishData)}`);
 
