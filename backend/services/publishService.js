@@ -452,22 +452,38 @@ const detectIGMediaType = (urls) => {
 const publishIGContainer = async (igAccountId, creationId, pageToken) => {
   logger.info('📷', `Publishing container ${creationId}...`);
 
-  const publishRes  = await fetch(`https://graph.facebook.com/v19.0/${igAccountId}/media_publish`, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ creation_id: creationId, access_token: pageToken }),
-  });
-  const publishData = await publishRes.json();
+  let attempt = 1;
+  const maxAttempts = 3;
 
- 
+  while (attempt <= maxAttempts) {
+    const publishRes  = await fetch(`https://graph.facebook.com/v19.0/${igAccountId}/media_publish`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ creation_id: creationId, access_token: pageToken }),
+    });
+    const publishData = await publishRes.json();
 
-  if (publishData.error) throw new Error(`Instagram publish: ${publishData.error.message}`);
-  if (!publishData.id)   throw new Error(`Instagram publish failed: ${JSON.stringify(publishData)}`);
+    // ✨ 1. SUCCESS: The post went through!
+    if (publishData.id && !publishData.error) {
+      logger.info('📷', `✅ Instagram published — postId: ${publishData.id}`);
+      return { postId: publishData.id };
+    }
 
-  logger.info('📷', `✅ Instagram published — postId: ${publishData.id}`);
-  return { postId: publishData.id }; 
+    // ✨ 2. THE FIX: If Meta is lagging, wait 5 seconds and loop again
+    if (publishData.error && publishData.error.message.includes('Media ID is not available')) {
+      if (attempt < maxAttempts) {
+        logger.warn('📷', `Meta servers lagging. Pausing for 5 seconds... (Attempt ${attempt}/${maxAttempts})`);
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        attempt++;
+        continue; // Starts the loop over to try again
+      }
+    }
+
+    // ✨ 3. FATAL ERROR: Any other error, or if we run out of tries, throw it
+    if (publishData.error) throw new Error(`Instagram publish: ${publishData.error.message}`);
+    throw new Error(`Instagram publish failed: ${JSON.stringify(publishData)}`);
+  }
 };
-
 async function waitForMediaProcessing(containerId, accessToken, maxAttempts = 30) {
   const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
