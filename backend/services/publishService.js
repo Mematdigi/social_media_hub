@@ -472,7 +472,7 @@ const publishIGContainer = async (igAccountId, creationId, pageToken) => {
     // ✨ 2. THE FIX: If Meta is lagging, wait 5 seconds and loop again
     if (publishData.error && publishData.error.message.includes('Media ID is not available')) {
       if (attempt < maxAttempts) {
-        logger.warn('📷', `Meta servers lagging. Pausing for 5 seconds... (Attempt ${attempt}/${maxAttempts})`);
+        console.log('📷', `Meta servers lagging. Pausing for 5 seconds... (Attempt ${attempt}/${maxAttempts})`);
         await new Promise(resolve => setTimeout(resolve, 5000));
         attempt++;
         continue; // Starts the loop over to try again
