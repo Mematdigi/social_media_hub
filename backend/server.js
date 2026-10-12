@@ -61,7 +61,7 @@ const publishToPlatform = async (platform, content) => {
   };
 };
 
-// ============ CRON JOBS ============
+
 
 // // Auto-publish scheduled posts (every minute)
 // cron.schedule('* * * * *', async () => {
@@ -248,3 +248,38 @@ process.on('SIGTERM', () => {
   mongoose.connection.close();
   process.exit(0);
 });
+
+const fs = require('fs').promises;
+const path = require('path');
+
+const UPLOADS_DIR = '/var/www/social_media_hub/backend/uploads/';
+const MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000; // 3 days old in milliseconds
+const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // Run the check every 24 hours
+
+async function startCleanupLoop() {
+    console.log('Checking for old .mp4 files...');
+    
+    try {
+        const files = await fs.readdir(UPLOADS_DIR);
+        const now = Date.now();
+
+        for (const file of files) {
+            if (path.extname(file).toLowerCase() === '.mp4') {
+                const filePath = path.join(UPLOADS_DIR, file);
+                const stats = await fs.stat(filePath);
+
+                if (now - stats.mtimeMs > MAX_AGE_MS) {
+                    await fs.unlink(filePath);
+                    console.log(`Automatically deleted: ${file}`);
+                }
+            }
+        }
+    } catch (error) {
+        console.error('Video cleanup failed:', error);
+    } finally {
+        setTimeout(startCleanupLoop, CHECK_INTERVAL_MS);
+    }
+}
+
+// Initialize the first run
+startCleanupLoop();
