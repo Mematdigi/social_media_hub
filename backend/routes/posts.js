@@ -651,6 +651,9 @@ router.delete('/:postId', authMiddleware, async (req, res) => {
 // ════════════════════════════════════════════════════════════
 // PUT /api/posts/:postId - Update Post
 // ════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════
+// PUT /api/posts/:postId - Update Post
+// ════════════════════════════════════════════════════════════
 router.put('/:postId', authMiddleware, async (req, res) => {
   try {
     const { 
@@ -659,6 +662,8 @@ router.put('/:postId', authMiddleware, async (req, res) => {
       mediaFormats, 
       accountIds, 
       selectedPages,
+      scheduledAt, // 🆕 FIX: Extracted scheduledAt
+      status,      // 🆕 FIX: Extracted status (for retries)
       youtubeTitle,
       youtubeTags,
       youtubeCategory,
@@ -694,17 +699,24 @@ router.put('/:postId', authMiddleware, async (req, res) => {
       post.markModified('selectedPages'); 
     }
 
+    // 🆕 FIX: This now works because scheduledAt is destructured
     if (scheduledAt !== undefined) {
       post.scheduledAt = scheduledAt ? new Date(scheduledAt) : null;
     }
-Sa
+
+    // 🆕 FIX: Allow status updates (e.g., changing 'failed' to 'scheduled')
+    if (status !== undefined) {
+      post.status = status;
+    }
+
+    // 🆕 FIX: Removed the 'Sa' syntax error here
 
     if (youtubeTitle !== undefined)       post.youtubeTitle = youtubeTitle;
     if (youtubeTags !== undefined)        post.youtubeTags = Array.isArray(youtubeTags) ? youtubeTags : [];
     if (youtubeCategory !== undefined)    post.youtubeCategory = youtubeCategory;
     if (youtubePrivacy !== undefined)     post.youtubePrivacy = youtubePrivacy;
     if (youtubeMadeForKids !== undefined) post.youtubeMadeForKids = youtubeMadeForKids;
-    if (youtubeThumbnail !== undefined) post.youtubeThumbnail = youtubeThumbnail;
+    if (youtubeThumbnail !== undefined)   post.youtubeThumbnail = youtubeThumbnail;
     
 
     post.updatedAt = new Date();

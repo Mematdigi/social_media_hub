@@ -249,37 +249,73 @@ process.on('SIGTERM', () => {
   process.exit(0);
 });
 
+// Code for deleting the post from the uploaded folder like images and files
 const fs = require('fs').promises;
 const path = require('path');
+// Import your Post model (adjust path to your project)
+const Post = require('./models/Post'); 
 
 const UPLOADS_DIR = '/var/www/social_media_hub/backend/uploads/';
-const MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000; // 3 days old in milliseconds
-const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // Run the check every 24 hours
+const MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000; // 3 days
+const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // Check every 24 hours
+
+const ALLOWED_EXTENSIONS = new Set([
+  '.mp4', '.mov', '.webm', '.jpg', '.jpeg', '.png', '.webp'
+]);
 
 async function startCleanupLoop() {
-    console.log('Checking for old .mp4 files...');
-    
-    try {
-        const files = await fs.readdir(UPLOADS_DIR);
-        const now = Date.now();
+  console.log('🔄 Checking for expired published media (images & videos)...');
 
-        for (const file of files) {
-            if (path.extname(file).toLowerCase() === '.mp4') {
-                const filePath = path.join(UPLOADS_DIR, file);
-                const stats = await fs.stat(filePath);
+  try {
+    const cutoffDate = new Date(Date.now() - MAX_AGE_MS);
 
-                if (now - stats.mtimeMs > MAX_AGE_MS) {
-                    await fs.unlink(filePath);
-                    console.log(`Automatically deleted: ${file}`);
-                }
-            }
+    // 1. Fetch only posts that are published and older than 3 days
+    // Scheduled and failed posts will NEVER be returned here
+    const eligiblePosts = await Post.find({
+      status: 'published',
+      publishedAt: { $lt: cutoffDate },
+      mediaDeleted: { $ne: true }
+    });
+
+    for (const post of eligiblePosts) {
+      if (!post.mediaFile) continue;
+
+      const ext = path.extname(post.mediaFile).toLowerCase();
+      if (!ALLOWED_EXTENSIONS.has(ext)) continue;
+
+      // 2. Safety check: make sure no pending or failed post shares this file
+      const isUsedElsewhere = await Post.exists({
+        _id: { $ne: post._id },
+        mediaFile: post.mediaFile,
+        status: { $in: ['scheduled', 'failed', 'draft', 'stuck'] }
+      });
+
+      if (isUsedElsewhere) {
+        console.log(`⚠️ Skipping ${post.mediaFile}: still needed by another scheduled/failed post.`);
+        continue;
+      }
+
+      // 3. Remove file from disk
+      const filePath = path.join(UPLOADS_DIR, post.mediaFile);
+      try {
+        await fs.unlink(filePath);
+        console.log(`🗑️ Deleted published media: ${post.mediaFile}`);
+      } catch (err) {
+        if (err.code !== 'ENOENT') {
+          console.error(`Error deleting ${post.mediaFile}:`, err);
         }
-    } catch (error) {
-        console.error('Video cleanup failed:', error);
-    } finally {
-        setTimeout(startCleanupLoop, CHECK_INTERVAL_MS);
+      }
+
+      // 4. Mark in database so it is not queried again
+      post.mediaDeleted = true;
+      await post.save();
     }
+  } catch (error) {
+    console.error('❌ Media cleanup encountered an error:', error);
+  } finally {
+    setTimeout(startCleanupLoop, CHECK_INTERVAL_MS);
+  }
 }
 
-// Initialize the first run
+// Start background loop
 startCleanupLoop();
