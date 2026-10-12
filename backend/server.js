@@ -253,7 +253,6 @@ process.on('SIGTERM', () => {
 const fs = require('fs').promises;
 const path = require('path');
 // Import your Post model (adjust path to your project)
-const Post = require('./models/Post'); 
 
 const UPLOADS_DIR = '/var/www/social_media_hub/backend/uploads/';
 const MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000; // 3 days
