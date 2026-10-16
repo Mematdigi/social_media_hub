@@ -12,7 +12,7 @@ const MEDIA_FORMATS = {
   instagram_story: { label: 'Instagram Story (9:16)', accepted: '.jpg,.jpeg,.png,.gif,.mp4' },
   youtube: { label: 'YouTube Video', accepted: '.mp4,.mov,.avi,.mkv' },
   twitter: { label: 'Twitter/X', accepted: '.jpg,.jpeg,.png,.gif,.mp4,.mov' },
-  tiktok: { label: 'TikTok (9:16)', accepted: '.mp4,.mov' },
+  gif: { label: 'gif (9:16)', accepted: '.mp4,.mov,.gif' },
   linkedin: { label: 'LinkedIn', accepted: '.jpg,.jpeg,.png,.gif,.mp4,.mov' },
 };
 
