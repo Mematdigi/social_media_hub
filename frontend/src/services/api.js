@@ -183,8 +183,20 @@ export const postsAPI = {
     api.post(`/posts/${postId}/retry-failed`),
     
   // ✨ FIXED: Triggers a clean fetch to run the backend auto-sync engine without throwing a 404
-  sync: () => 
+  sync: () =>
     api.get('/posts', { params: { page: 1, limit: 10 } }),
+
+  // 🆕 Server media retention (does not touch the live post on any platform)
+  getMediaSettings: () => api.get('/posts/settings/media'),
+  updateMediaRetention: (postId, data) => api.patch(`/posts/${postId}/media-retention`, data),
+};
+
+// 🆕 AI Assistant API
+export const aiAPI = {
+  status:   ()       => api.get('/ai/status'),
+  suggest:  (data)   => api.post('/ai/suggest', data, { timeout: 150000 }),
+  trending: (params) => api.get('/ai/trending', { params, timeout: 150000 }),
+  events:   (params) => api.get('/ai/events', { params, timeout: 150000 }),
 };
 
 // Scheduler API

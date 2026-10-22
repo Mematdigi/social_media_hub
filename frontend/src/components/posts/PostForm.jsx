@@ -4,6 +4,15 @@ import { Upload, X, Calendar, Send, Loader2, Youtube, FileText, Tag, Lock, Globe
 import { Button } from '../ui/button';
 import { accountsAPI } from '../../services/api';
 import { toast } from 'sonner';
+import { AIAssistPanel } from './AIAssistPanel';
+import { MediaRetentionPicker } from './MediaRetentionPicker';
+import {
+  retentionFromPost,
+  retentionToPayload,
+  validateRetention,
+  getMediaKind,
+  mediaNoun,
+} from '../../utils/mediaRetention';
 
 const MEDIA_FORMATS = {
   facebook: { label: 'Facebook Post', accepted: '.jpg,.jpeg,.png,.gif,.mp4,.mov' },
@@ -94,6 +103,9 @@ export const PostForm = ({ initialData = null, initialPost = null, onSubmit, loa
   
   // ✨ FIX: Strict locking state to completely prevent double-click publishing
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // 🆕 Server media retention (when uploaded files are deleted from the server)
+  const [mediaRetention, setMediaRetention] = useState(() => retentionFromPost(initial));
 
   React.useEffect(() => {
     fetchAccounts();
@@ -253,6 +265,35 @@ export const PostForm = ({ initialData = null, initialPost = null, onSubmit, loa
     return matched?.platform === 'youtube';
   });
 
+  // 🆕 Platforms of the selected destinations (used by the AI Assistant)
+  const selectedPlatforms = React.useMemo(() => {
+    const set = new Set();
+    selectedAccounts.forEach(accountId => {
+      const matched = connectedAccountsList.find(
+        item => (item.account.id === accountId || item.account._id === accountId)
+      );
+      if (matched?.platform) set.add(matched.platform === 'x' ? 'twitter' : matched.platform);
+    });
+    return [...set];
+  }, [selectedAccounts, connectedAccountsList]);
+
+  // 🆕 AI Assistant → form helpers
+  const handleAddHashtags = (tags) => {
+    setContent(prev => {
+      const existing = new Set((prev.match(/#[\p{L}\p{N}_]+/gu) || []).map(t => t.toLowerCase()));
+      const toAdd = tags.filter(t => !existing.has(t.toLowerCase()));
+      if (!toAdd.length) return prev;
+      const base = prev.trimEnd();
+      return base ? `${base}\n\n${toAdd.join(' ')}` : toAdd.join(' ');
+    });
+  };
+
+  const handleUseYoutubeCategory = (id) => {
+    if (YOUTUBE_CATEGORIES.some(cat => cat.id === String(id))) setYoutubeCategory(String(id));
+  };
+
+  const hasUploadedMedia = mediaUrls.length > 0 || Boolean(youtubeThumbnail);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
 
@@ -281,6 +322,16 @@ export const PostForm = ({ initialData = null, initialPost = null, onSubmit, loa
       return;
     }
 
+    // 🆕 Validate the media deletion date (only matters when media is attached)
+    const retentionError = hasUploadedMedia && !initial?.mediaDeleted
+      ? validateRetention(mediaRetention, scheduledAt || null)
+      : '';
+    if (retentionError) {
+      toast.error(retentionError);
+      setIsSubmitting(false);
+      return;
+    }
+
     const parsedTags = youtubeTags.split(',').map(t => t.trim()).filter(Boolean);
 
     // ✨ FIX: Inject the unified Title into the Content for FB & IG captions
@@ -300,6 +351,8 @@ export const PostForm = ({ initialData = null, initialPost = null, onSubmit, loa
       mediaFormats,
       status:              scheduledAt ? 'scheduled' : status,
       scheduledAt:         scheduledAt ? new Date(scheduledAt).toISOString() : null,
+      // 🆕 Server media retention (skipped once the files are already removed)
+      ...(!initial?.mediaDeleted && retentionToPayload(mediaRetention)),
       ...(isYoutubeSelected && {
         youtubeTitle:       postTitle.trim(),
         youtubeTags:        parsedTags,
@@ -319,6 +372,20 @@ export const PostForm = ({ initialData = null, initialPost = null, onSubmit, loa
 
   return (
     <form onSubmit={handleSubmit} className="space-y-8 max-w-4xl mx-auto pb-12">
+
+      {/* ── 🆕 AI Assistant (collapsible — the form below is unchanged) ───── */}
+      <AIAssistPanel
+        title={postTitle}
+        content={content}
+        platforms={selectedPlatforms}
+        mediaKind={getMediaKind(mediaUrls)}
+        onUseTitle={(text) => setPostTitle(text.slice(0, 100))}
+        onUseCaption={(text) => setContent(text)}
+        onAddHashtags={handleAddHashtags}
+        onUseYoutubeTags={(tags) => setYoutubeTags(tags.join(', '))}
+        onUseYoutubeCategory={handleUseYoutubeCategory}
+        onUseSchedule={(localDateTime) => setScheduledAt(localDateTime)}
+      />
 
       {/* ── 1. Content Composition ─────────────────────────────────────────── */}
       <SectionCard title="Compose Post" subtitle="Write the content for your post" icon={LayoutGrid}>
@@ -806,6 +873,22 @@ export const PostForm = ({ initialData = null, initialPost = null, onSubmit, loa
                 Publish Now
               </label>
             </div>
+          </div>
+        )}
+
+        {/* 🆕 When to delete the uploaded video / images from the server */}
+        {(hasUploadedMedia || initial?.mediaDeleted) && (
+          <div className="pt-5 border-t border-slate-100">
+            <MediaRetentionPicker
+              retention={mediaRetention.retention}
+              deleteOn={mediaRetention.deleteOn}
+              onChange={setMediaRetention}
+              scheduledAt={scheduledAt}
+              publishedAt={initial?.status === 'published' ? initial?.publishedAt : null}
+              publishNow={!scheduledAt && status === 'published'}
+              mediaNoun={mediaNoun(mediaUrls.length ? mediaUrls : initial?.mediaUrls || [])}
+              mediaDeletedAt={initial?.mediaDeleted ? (initial?.mediaDeletedAt || initial?.updatedAt) : null}
+            />
           </div>
         )}
       </SectionCard>

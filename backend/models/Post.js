@@ -64,6 +64,15 @@ const postSchema = new mongoose.Schema({
 
   platformResults: { type: [platformResultSchema], default: [] },
 
+  // ── Server media retention (files in /uploads, NOT the live social posts) ──
+  // null  → use MEDIA_RETENTION_DAYS from .env (default 3)
+  // 0     → never delete this post's uploaded files
+  // n > 0 → delete the uploaded files n days after the post is published
+  mediaRetentionDays: { type: Number, default: null, min: 0 },
+  mediaDeleteOn:      { type: Date,    default: null },   // exact date/time override
+  mediaDeleted:       { type: Boolean, default: false },
+  mediaDeletedAt:     { type: Date,    default: null },
+
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
 });
@@ -72,5 +81,6 @@ const postSchema = new mongoose.Schema({
 postSchema.index({ status: 1, scheduledAt: 1 });
 postSchema.index({ userId: 1, createdAt: -1 });
 postSchema.index({ 'platformResults.platformPostId': 1 });
+postSchema.index({ status: 1, mediaDeleted: 1 });
 
 module.exports = mongoose.model('Post', postSchema);

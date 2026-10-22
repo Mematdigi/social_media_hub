@@ -13,6 +13,8 @@ const postRoutes = require('./routes/posts');
 const schedulerRoutes = require('./routes/scheduler');
 const inboxRoutes = require('./routes/inbox');
 const analyticsRoutes = require('./routes/analytics');
+const aiRoutes = require('./routes/ai');
+const { startMediaCleanup } = require('./services/mediaCleanupService');
 
 // Import models and services for cron jobs
 const Post = require('./models/Post');
@@ -41,6 +43,7 @@ app.use('/api/posts', postRoutes);
 app.use('/api/scheduler', schedulerRoutes);
 app.use('/api/inbox', inboxRoutes);
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/ai', aiRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -235,6 +238,9 @@ mongoose.connect(`${MONGO_URL}/${DB_NAME}`)
       logger.info('  ', '- Auto-publish: every minute');
       logger.info('  ', '- Inbox sync: every 15 minutes');
       logger.info('  ', '- Analytics sync: daily at 2 AM');
+
+      // 🆕 Configurable server media cleanup (see services/mediaCleanupService.js)
+      startMediaCleanup();
     });
   })
   .catch(err => {
@@ -249,72 +255,7 @@ process.on('SIGTERM', () => {
   process.exit(0);
 });
 
-// Code for deleting the post from the uploaded folder like images and files
-const fs = require('fs').promises;
-const path = require('path');
-// Import your Post model (adjust path to your project)
-
-const UPLOADS_DIR = '/var/www/social_media_hub/backend/uploads/';
-const MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000; // 3 days
-const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // Check every 24 hours
-
-const ALLOWED_EXTENSIONS = new Set([
-  '.mp4', '.mov', '.webm', '.jpg', '.jpeg', '.png', '.webp'
-]);
-
-async function startCleanupLoop() {
-  console.log('🔄 Checking for expired published media (images & videos)...');
-
-  try {
-    const cutoffDate = new Date(Date.now() - MAX_AGE_MS);
-
-    // 1. Fetch only posts that are published and older than 3 days
-    // Scheduled and failed posts will NEVER be returned here
-    const eligiblePosts = await Post.find({
-      status: 'published',
-      publishedAt: { $lt: cutoffDate },
-      mediaDeleted: { $ne: true }
-    });
-
-    for (const post of eligiblePosts) {
-      if (!post.mediaFile) continue;
-
-      const ext = path.extname(post.mediaFile).toLowerCase();
-      if (!ALLOWED_EXTENSIONS.has(ext)) continue;
-
-      // 2. Safety check: make sure no pending or failed post shares this file
-      const isUsedElsewhere = await Post.exists({
-        _id: { $ne: post._id },
-        mediaFile: post.mediaFile,
-        status: { $in: ['scheduled', 'failed', 'draft', 'stuck'] }
-      });
-
-      if (isUsedElsewhere) {
-        console.log(`⚠️ Skipping ${post.mediaFile}: still needed by another scheduled/failed post.`);
-        continue;
-      }
-
-      // 3. Remove file from disk
-      const filePath = path.join(UPLOADS_DIR, post.mediaFile);
-      try {
-        await fs.unlink(filePath);
-        console.log(`🗑️ Deleted published media: ${post.mediaFile}`);
-      } catch (err) {
-        if (err.code !== 'ENOENT') {
-          console.error(`Error deleting ${post.mediaFile}:`, err);
-        }
-      }
-
-      // 4. Mark in database so it is not queried again
-      post.mediaDeleted = true;
-      await post.save();
-    }
-  } catch (error) {
-    console.error('❌ Media cleanup encountered an error:', error);
-  } finally {
-    setTimeout(startCleanupLoop, CHECK_INTERVAL_MS);
-  }
-}
-
-// Start background loop
-startCleanupLoop();
+// Server media cleanup now lives in services/mediaCleanupService.js
+// and is started after MongoDB connects (see startMediaCleanup() above).
+// Configure it with MEDIA_RETENTION_DAYS, MEDIA_CLEANUP_INTERVAL_MINUTES,
+// MEDIA_CLEANUP_DRY_RUN and UPLOADS_DIR in .env, or per post from the UI.

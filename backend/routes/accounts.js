@@ -12,7 +12,7 @@ const jwt           = require('jsonwebtoken');
 const router = express.Router();
 
 // ─────────────────────────────────────────────────────────────
-// OAuth credentials from .env
+// OAuth credentials from .env for outh 
 // ─────────────────────────────────────────────────────────────
 const OAUTH_CREDENTIALS = {
   facebook:  { clientId: process.env.FB_CLIENT_ID,      clientSecret: process.env.FB_CLIENT_SECRET },

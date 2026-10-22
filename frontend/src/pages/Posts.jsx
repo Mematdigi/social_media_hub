@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'; 
 import { PageWrapper } from '../components/layout/PageWrapper';
 import { PostCard } from '../components/posts/PostCard';
+import { MediaDeletionBadge } from '../components/posts/MediaDeletionBadge';
 import { PageLoader } from '../components/common/Loader';
 import { Button } from '../components/ui/button';
 import { usePosts } from '../hooks/usePosts';
@@ -393,7 +394,9 @@ const loadPostsTargetedData = useCallback(async () => {
                           } text-white`}>
                             <Image className="w-6 h-6 mb-2 opacity-80" />
                             <span className="text-xs font-bold tracking-wide uppercase truncate max-w-full">{getPostBrandName(post)}</span>
-                            <span className="text-[10px] opacity-70 mt-1 font-medium">Attachment Missing</span>
+                            <span className="text-[10px] opacity-70 mt-1 font-medium">
+                              {post.mediaDeleted ? 'Removed from server' : 'Attachment Missing'}
+                            </span>
                           </div>
                         ) : post.mediaUrls[0].match(/\.(mp4|webm|ogg|mov)$/i) ? (
                           <video src={post.mediaUrls[0]} className="w-full h-full object-cover" />
@@ -415,6 +418,16 @@ const loadPostsTargetedData = useCallback(async () => {
                     )}
                     <PostCard post={post} onDelete={handleDelete} />
                   </div>
+                </div>
+
+                {/* 🆕 When the uploaded video / images get deleted from the server */}
+                <div className="mb-4 empty:hidden">
+                  <MediaDeletionBadge
+                    post={post}
+                    onUpdated={(fields) =>
+                      setAllPosts(prev => prev.map(p => (p.id === post.id ? { ...p, ...fields } : p)))
+                    }
+                  />
                 </div>
 
                 {/* ── 2. NEW: Database User & Audit Log ── */}
