@@ -10,6 +10,7 @@ import { useAuth } from '../context/AuthContext';
 import { useAccounts } from '../context/AccountsContext';
 import { usePosts } from '../hooks/usePosts';
 import { format } from 'date-fns';
+import { TrendingDashboard } from '../components/dashboard/TrendingDashboard';
 
 const StatCard = ({ icon: Icon, label, value, color, delay }) => (
   <motion.div
@@ -121,6 +122,9 @@ export default function Dashboard() {
           delay={0.25}
         />
       </div>
+
+      {/* 🆕 Trending topics + AI post ideas */}
+      <TrendingDashboard />
 
       {/* Recent Posts */}
       <motion.div

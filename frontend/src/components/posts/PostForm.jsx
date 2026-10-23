@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Upload, X, Calendar, Send, Loader2, Youtube, FileText, Tag, Lock, Globe, Users, Camera, LayoutGrid, Image as ImageIcon, Share2 } from 'lucide-react';
 import { Button } from '../ui/button';
@@ -6,6 +7,17 @@ import { accountsAPI } from '../../services/api';
 import { toast } from 'sonner';
 import { AIAssistPanel } from './AIAssistPanel';
 import { MediaRetentionPicker } from './MediaRetentionPicker';
+import {
+  AISuggestBar,
+  TrendingTopicChips,
+  TitleSuggestions,
+  CaptionSuggestions,
+  HashtagSuggestions,
+  YoutubeTagSuggestions,
+  BestTimeSuggestions,
+} from './AIFieldSuggestions';
+import { useAISuggestions } from '../../hooks/useAISuggestions';
+import { trendToBrief } from '../../utils/aiHelpers';
 import {
   retentionFromPost,
   retentionToPayload,
@@ -107,6 +119,15 @@ export const PostForm = ({ initialData = null, initialPost = null, onSubmit, loa
   // 🆕 Server media retention (when uploaded files are deleted from the server)
   const [mediaRetention, setMediaRetention] = useState(() => retentionFromPost(initial));
 
+  // 🆕 AI suggestions shown under each field
+  const ai = useAISuggestions();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const composeRef = React.useRef(null);
+  const titleRef = React.useRef(postTitle);
+  titleRef.current = postTitle;
+  const [accountsLoaded, setAccountsLoaded] = useState(false);
+
   React.useEffect(() => {
     fetchAccounts();
   }, []);
@@ -118,6 +139,8 @@ export const PostForm = ({ initialData = null, initialPost = null, onSubmit, loa
       setAccounts(Array.isArray(data) ? data : []);
     } catch (error) {
       toast.error('Failed to load accounts');
+    } finally {
+      setAccountsLoaded(true);
     }
   };
 
@@ -294,6 +317,105 @@ export const PostForm = ({ initialData = null, initialPost = null, onSubmit, loa
 
   const hasUploadedMedia = mediaUrls.length > 0 || Boolean(youtubeThumbnail);
 
+  // ─── 🆕 AI suggestions: helpers ──────────────────────────────────────────
+  const AI_PLATFORMS = ['facebook', 'instagram', 'youtube', 'twitter', 'linkedin', 'threads'];
+
+  const connectedPlatforms = React.useMemo(() => (
+    [...new Set(connectedAccountsList.map(item => (item.platform === 'x' ? 'twitter' : item.platform)))]
+      .filter(p => AI_PLATFORMS.includes(p))
+  ), [connectedAccountsList]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Write for the selected destinations; otherwise the hinted platform; otherwise every connected one
+  const aiPlatforms = (hint) => {
+    if (selectedPlatforms.length) return selectedPlatforms;
+    if (hint && AI_PLATFORMS.includes(hint)) return [hint];
+    return connectedPlatforms.length ? connectedPlatforms.slice(0, 4) : ['facebook', 'instagram'];
+  };
+
+  const handleAddYoutubeTags = (tags) => {
+    setYoutubeTags(prev => {
+      const list = prev.split(',').map(t => t.trim()).filter(Boolean);
+      const seen = new Set(list.map(t => t.toLowerCase()));
+      tags.forEach(tag => {
+        if (!seen.has(tag.toLowerCase())) {
+          list.push(tag);
+          seen.add(tag.toLowerCase());
+        }
+      });
+      return list.join(', ');
+    });
+  };
+
+  const handleToggleHashtag = (tag, alreadyAdded) => {
+    if (!alreadyAdded) {
+      handleAddHashtags([tag]);
+      return;
+    }
+    const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    setContent(prev => prev
+      .replace(new RegExp(`[ \\t]*${escaped}(?![\\p{L}\\p{N}_])`, 'giu'), '')
+      .replace(/[ \t]+\n/g, '\n')
+      .trimEnd());
+  };
+
+  // Fill only the fields that are still empty, so nothing the user typed is lost
+  const fillEmptyFields = (result, hint) => {
+    if (!result) return;
+    if (result.titles?.[0]) setPostTitle(prev => (prev.trim() ? prev : result.titles[0].slice(0, 100)));
+    const caption = result.captions?.find(c => c.platform === hint) || result.captions?.[0];
+    if (caption) setContent(prev => (prev.trim() ? prev : caption.text));
+    if (result.youtubeTags?.length) setYoutubeTags(prev => (prev.trim() ? prev : result.youtubeTags.join(', ')));
+  };
+
+  // Picked a trend / idea / festival → suggestions for every field, empty fields filled in
+  const writeFromBrief = async (brief, hint = null) => {
+    composeRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const result = await ai.generate({
+      topic: brief,
+      platforms: aiPlatforms(hint),
+      mediaKind: getMediaKind(mediaUrls),
+    });
+    fillEmptyFields(result, hint);
+  };
+
+  const handleSuggest = () => ai.generate({
+    title: postTitle, content, platforms: aiPlatforms(), mediaKind: getMediaKind(mediaUrls),
+  });
+
+  const handleImprove = () => ai.generate({
+    mode: 'improve', title: postTitle, content, platforms: aiPlatforms(), mediaKind: getMediaKind(mediaUrls),
+  });
+
+  // Auto-suggest when the user finishes typing a title (skips titles picked from the list)
+  const handleTitleBlur = () => {
+    setTimeout(() => {
+      const t = titleRef.current.trim();
+      if (t.length < 3 || !ai.status?.configured) return;
+      if (ai.suggestions?.titles?.some(x => x.trim() === t)) return;
+      ai.generate({ title: t, content, platforms: aiPlatforms(), mediaKind: getMediaKind(mediaUrls), silent: true });
+    }, 200);
+  };
+
+  // Auto-suggest from the caption when there is no title yet
+  const handleCaptionBlur = () => {
+    if (postTitle.trim() || content.trim().length < 20 || ai.suggestions || !ai.status?.configured) return;
+    ai.generate({ content, platforms: aiPlatforms(), mediaKind: getMediaKind(mediaUrls), silent: true });
+  };
+
+  // Opened from the Dashboard ("Create post" on a trend) → write it straight away
+  const handledDashboardBrief = React.useRef(false);
+  React.useEffect(() => {
+    if (!accountsLoaded || handledDashboardBrief.current || initial) return;
+    const brief = location.state?.aiBrief;
+    if (!brief) return;
+    handledDashboardBrief.current = true;
+    const hint = location.state?.platformHint || null;
+    navigate(location.pathname, { replace: true, state: null });
+    writeFromBrief(brief, hint);
+  }, [accountsLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const suggestedCategoryLabel = YOUTUBE_CATEGORIES.find(cat => cat.id === String(ai.suggestions?.youtubeCategoryId || ''))?.label;
+
   const handleSubmit = async (e) => {
     e.preventDefault();
 
@@ -373,22 +495,25 @@ export const PostForm = ({ initialData = null, initialPost = null, onSubmit, loa
   return (
     <form onSubmit={handleSubmit} className="space-y-8 max-w-4xl mx-auto pb-12">
 
-      {/* ── 🆕 AI Assistant (collapsible — the form below is unchanged) ───── */}
+      {/* ── 🆕 What's trending (collapsible) — pick a topic to write about ── */}
       <AIAssistPanel
-        title={postTitle}
-        content={content}
-        platforms={selectedPlatforms}
-        mediaKind={getMediaKind(mediaUrls)}
-        onUseTitle={(text) => setPostTitle(text.slice(0, 100))}
-        onUseCaption={(text) => setContent(text)}
-        onAddHashtags={handleAddHashtags}
-        onUseYoutubeTags={(tags) => setYoutubeTags(tags.join(', '))}
-        onUseYoutubeCategory={handleUseYoutubeCategory}
-        onUseSchedule={(localDateTime) => setScheduledAt(localDateTime)}
+        region={ai.prefs.region}
+        niche={ai.prefs.niche}
+        onPrefsChange={ai.setPrefs}
+        onWriteFromIdea={writeFromBrief}
       />
 
       {/* ── 1. Content Composition ─────────────────────────────────────────── */}
+      <div ref={composeRef} className="scroll-mt-6">
       <SectionCard title="Compose Post" subtitle="Write the content for your post" icon={LayoutGrid}>
+
+        {/* 🆕 AI suggestion controls */}
+        <AISuggestBar
+          ai={ai}
+          onSuggest={handleSuggest}
+          onImprove={handleImprove}
+          canImprove={content.trim().length > 0}
+        />
         
         {/* ✨ UNIFIED TITLE BOX: Placed here so it applies to Facebook, Instagram, and YouTube automatically */}
         <div>
@@ -399,10 +524,25 @@ export const PostForm = ({ initialData = null, initialPost = null, onSubmit, loa
             type="text"
             value={postTitle}
             onChange={(e) => setPostTitle(e.target.value)}
+            onBlur={handleTitleBlur}
             placeholder="Enter a catchy title..."
             maxLength={100}
             className="w-full px-5 py-3.5 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 outline-none text-[15px] text-slate-800 placeholder:text-slate-400 transition-all shadow-sm"
           />
+
+          {/* 🆕 Trending topics while the title is empty, then title suggestions */}
+          {!postTitle.trim() && !ai.suggestions && !ai.loading && (
+            <TrendingTopicChips region={ai.prefs.region} onPick={(trend) => writeFromBrief(trendToBrief(trend))} />
+          )}
+          {(ai.suggestions || ai.loading) && (
+            <TitleSuggestions
+              titles={ai.suggestions?.titles || []}
+              current={postTitle}
+              loading={ai.loading}
+              onPick={(t) => setPostTitle(t.slice(0, 100))}
+              onRefresh={handleSuggest}
+            />
+          )}
         </div>
 
         <div>
@@ -412,6 +552,7 @@ export const PostForm = ({ initialData = null, initialPost = null, onSubmit, loa
           <textarea
             value={content}
             onChange={(e) => setContent(e.target.value)}
+            onBlur={handleCaptionBlur}
             placeholder="What do you want to share?"
             rows={5}
             className="w-full px-5 py-5 rounded-2xl border border-slate-200 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 outline-none resize-none transition-all text-[15px] text-slate-800 placeholder:text-slate-400 shadow-sm"
@@ -421,8 +562,28 @@ export const PostForm = ({ initialData = null, initialPost = null, onSubmit, loa
               {content.length} characters
             </div>
           </div>
+
+          {/* 🆕 Caption + hashtag suggestions */}
+          {(ai.suggestions || ai.loading) && (
+            <CaptionSuggestions
+              captions={ai.suggestions?.captions || []}
+              current={content}
+              loading={ai.loading}
+              onPick={(text) => setContent(text)}
+            />
+          )}
+          {ai.suggestions && (
+            <HashtagSuggestions
+              hashtags={ai.suggestions.hashtags || []}
+              content={content}
+              tips={ai.suggestions.tips || []}
+              onToggle={handleToggleHashtag}
+              onAddAll={handleAddHashtags}
+            />
+          )}
         </div>
       </SectionCard>
+      </div>
 
       {/* ── 2. Media Upload ──────────────────────────────────────────────────── */}
       <SectionCard title="Media Attachments" subtitle="Upload photos or videos" icon={ImageIcon}>
@@ -738,6 +899,20 @@ export const PostForm = ({ initialData = null, initialPost = null, onSubmit, loa
                     ))}
                   </div>
                 )}
+
+                {/* 🆕 YouTube tag + category suggestions */}
+                {ai.suggestions && (
+                  <YoutubeTagSuggestions
+                    tags={ai.suggestions.youtubeTags || []}
+                    current={youtubeTags}
+                    onAdd={(tag) => handleAddYoutubeTags([tag])}
+                    onAddAll={handleAddYoutubeTags}
+                    category={ai.suggestions.youtubeCategoryId}
+                    categoryLabel={suggestedCategoryLabel}
+                    currentCategory={youtubeCategory}
+                    onUseCategory={handleUseYoutubeCategory}
+                  />
+                )}
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
@@ -842,6 +1017,15 @@ export const PostForm = ({ initialData = null, initialPost = null, onSubmit, loa
               <div className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
               Will publish on {new Date(scheduledAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
             </div>
+          )}
+
+          {/* 🆕 Best time suggestions */}
+          {ai.suggestions && (
+            <BestTimeSuggestions
+              bestTimes={ai.suggestions.bestTimes || []}
+              region={ai.prefs.region}
+              onPick={(localDateTime) => setScheduledAt(localDateTime)}
+            />
           )}
         </div>
 

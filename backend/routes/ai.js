@@ -3,6 +3,8 @@
 // GET  /api/ai/status     → is AI configured?
 // POST /api/ai/suggest    → titles, captions, hashtags, YouTube tags, best times
 // GET  /api/ai/trending   → live Google/YouTube trends + AI content ideas
+// GET  /api/ai/trends/sources   → live Google/YouTube trends only (no AI quota)
+// GET  /api/ai/trends/instagram → top Instagram posts for trending hashtags
 // GET  /api/ai/events     → upcoming festivals / events + AI content ideas
 // ─────────────────────────────────────────────────────────────────────────────
 const express        = require('express');
@@ -54,9 +56,12 @@ const sendError = (res, error, fallback) => {
 // GET /api/ai/status
 // ════════════════════════════════════════════════════════════
 router.get('/status', authMiddleware, (req, res) => {
+  const status = ai.getStatus();
   res.json({
-    configured: ai.isConfigured(),
-    provider: ai.getProvider() || null,
+    configured: status.configured,
+    provider: status.provider,
+    model: status.model,
+    reason: status.reason,
     regions: ai.REGION_NAMES,
     holidaysSource: process.env.CALENDARIFIC_API_KEY ? 'calendarific' : 'ai',
     youtubeTrendsSource: process.env.YOUTUBE_API_KEY ? 'api_key' : 'connected_account',
@@ -102,28 +107,84 @@ router.post('/suggest', authMiddleware, async (req, res) => {
   }
 });
 
+// Live Google + YouTube data (no AI call, cached 30 min)
+const loadLiveSources = async (region, userId, refresh) => {
+  const [google, youtube] = await Promise.all([
+    trends.safely('Google Trends', () => trends.fetchGoogleTrends(region, { refresh })),
+    trends.safely('YouTube trending', () => trends.fetchYouTubeTrending(region, userId, { refresh })),
+  ]);
+
+  return {
+    google,
+    youtube,
+    sources: {
+      googleTrends: google.data,
+      googleTrendsError: google.error,
+      youtube: youtube.data,
+      youtubeError: youtube.error || (youtube.data.length === 0 && !process.env.YOUTUBE_API_KEY
+        ? 'Connect a YouTube account or add YOUTUBE_API_KEY to see YouTube trends.'
+        : null),
+    },
+  };
+};
+
 // ════════════════════════════════════════════════════════════
-// GET /api/ai/trending?region=IN&platforms=instagram,youtube&niche=gifting&refresh=true
+// GET /api/ai/trends/sources?region=IN&refresh=true
+// Live trending searches + videos only. Free: does not use the AI quota.
+// ════════════════════════════════════════════════════════════
+router.get('/trends/sources', authMiddleware, async (req, res) => {
+  try {
+    const region = ai.normalizeRegion(req.query.region);
+    const { sources } = await loadLiveSources(region, req.user.id, req.query.refresh === 'true');
+    res.json({ region, generatedAt: new Date().toISOString(), ...sources });
+  } catch (error) {
+    sendError(res, error, 'Failed to load trends');
+  }
+});
+
+// ════════════════════════════════════════════════════════════
+// GET /api/ai/trends/instagram?region=IN&hashtags=diwali,diwaligifts&refresh=true
+// Top Instagram posts for up to 3 hashtags (needs a connected Instagram account).
+// ════════════════════════════════════════════════════════════
+router.get('/trends/instagram', authMiddleware, async (req, res) => {
+  try {
+    const region = ai.normalizeRegion(req.query.region);
+    const refresh = req.query.refresh === 'true';
+    let hashtags = String(req.query.hashtags || '').split(',').map(h => h.trim()).filter(Boolean);
+
+    // No hashtags given → use today's top Google searches
+    if (!hashtags.length) {
+      const google = await trends.safely('Google Trends', () => trends.fetchGoogleTrends(region));
+      hashtags = google.data.slice(0, 3).map(t => t.title);
+    }
+
+    const result = await trends.fetchInstagramTopMedia(req.user.id, hashtags, { refresh });
+    res.json({ region, ...result });
+  } catch (error) {
+    sendError(res, error, 'Failed to load Instagram trends');
+  }
+});
+
+// ════════════════════════════════════════════════════════════
+// GET /api/ai/trending?region=IN&platforms=instagram,youtube&niche=gifting&perPlatform=3&refresh=true
 // ════════════════════════════════════════════════════════════
 router.get('/trending', authMiddleware, async (req, res) => {
   try {
-    const region    = ai.normalizeRegion(req.query.region);
-    const platforms = parsePlatforms(req.query.platforms);
-    const niche     = String(req.query.niche || '').slice(0, 200);
-    const refresh   = req.query.refresh === 'true';
-    const list      = platforms.length ? platforms : ['facebook', 'instagram', 'youtube', 'twitter'];
+    const region      = ai.normalizeRegion(req.query.region);
+    const platforms   = parsePlatforms(req.query.platforms);
+    const niche       = String(req.query.niche || '').slice(0, 200);
+    const refresh     = req.query.refresh === 'true';
+    const perPlatform = Math.min(Math.max(parseInt(req.query.perPlatform, 10) || 2, 1), 4);
+    const list        = platforms.length ? platforms : ['facebook', 'instagram', 'youtube', 'twitter'];
 
-    const [google, youtube] = await Promise.all([
-      trends.safely('Google Trends', () => trends.fetchGoogleTrends(region, { refresh })),
-      trends.safely('YouTube trending', () => trends.fetchYouTubeTrending(region, req.user.id, { refresh })),
-    ]);
+    const { google, youtube, sources } = await loadLiveSources(region, req.user.id, refresh);
 
     let summary = '';
     let ideas = [];
     let aiError = null;
 
     if (ai.isConfigured()) {
-      const cacheKey = `trend-ideas:${req.user.id}:${region}:${list.join(',')}:${niche.toLowerCase()}`;
+      const cacheKey = `trend-ideas:${req.user.id}:${region}:${list.join(',')}:${niche.toLowerCase()}:${perPlatform}`;
       try {
         const result = await trends.cached(cacheKey, 30 * MIN, async () => {
           if (!consumeAiCredit(req.user.id)) {
@@ -137,6 +198,7 @@ router.get('/trending', authMiddleware, async (req, res) => {
             niche,
             googleTrends: google.data,
             youtubeTrending: youtube.data,
+            perPlatform,
           });
         }, { refresh });
         summary = result.summary;
@@ -145,7 +207,7 @@ router.get('/trending', authMiddleware, async (req, res) => {
         aiError = error.message;
       }
     } else {
-      aiError = 'AI is not configured — showing live trends only.';
+      aiError = `${ai.getStatus().reason} Showing live trends only.`;
     }
 
     res.json({
@@ -154,14 +216,7 @@ router.get('/trending', authMiddleware, async (req, res) => {
       summary,
       ideas,
       aiError,
-      sources: {
-        googleTrends: google.data,
-        googleTrendsError: google.error,
-        youtube: youtube.data,
-        youtubeError: youtube.error || (youtube.data.length === 0 && !process.env.YOUTUBE_API_KEY
-          ? 'Connect a YouTube account or add YOUTUBE_API_KEY to see YouTube trends.'
-          : null),
-      },
+      sources,
     });
   } catch (error) {
     sendError(res, error, 'Failed to load trends');
@@ -192,7 +247,7 @@ router.get('/events', authMiddleware, async (req, res) => {
           })),
         });
       }
-      return res.status(503).json({ detail: 'AI is not configured. Add ANTHROPIC_API_KEY (or OPENAI_API_KEY) to the backend .env and restart.' });
+      return res.status(503).json({ detail: ai.getStatus().reason });
     }
 
     const cacheKey = `events:${region}:${days}:${niche.toLowerCase()}:${holidays.data.length}`;

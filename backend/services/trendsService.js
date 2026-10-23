@@ -160,6 +160,90 @@ const fetchHolidays = async (country = 'IN', days = 45) => {
     .sort((a, b) => a.date.localeCompare(b.date));
 };
 
+// ── Instagram top posts for hashtags (Instagram Graph API) ──────────────────
+// Needs a connected Instagram Business/Creator account. Meta also requires the
+// "Instagram Public Content Access" feature on the app for hashtag search.
+// Meta limit: 30 unique hashtags per account per 7 days, so results are cached
+// for 12 hours and at most 3 hashtags are searched per request.
+const toHashtagName = (value = '') =>
+  String(value).replace(/^#/, '').replace(/[^\p{L}\p{N}_]/gu, '').toLowerCase().slice(0, 60);
+
+const friendlyInstagramError = (message = '') => {
+  if (/permission|public content|\(#10\)|\(#200\)|not authorized|does not have/i.test(message)) {
+    return 'Instagram top posts need the "Instagram Public Content Access" feature approved for your Meta app. Until then, Instagram ideas are AI-suggested.';
+  }
+  if (/limit|too many|\(#4\)|\(#17\)|\(#32\)/i.test(message)) {
+    return 'Instagram hashtag search limit reached (30 hashtags per 7 days). Showing cached results only.';
+  }
+  return `Instagram top posts are unavailable: ${message}`;
+};
+
+const fetchInstagramTopMedia = async (userId, hashtags = [], { refresh = false } = {}) => {
+  const errorKey = `igerr:${userId}`;
+  const knownError = cache.get(errorKey);
+  if (!refresh && knownError && knownError.expires > Date.now()) {
+    return { groups: [], error: knownError.value };
+  }
+
+  const account = await SocialAccount.findOne({ userId, platform: 'instagram', isActive: true });
+  if (!account) {
+    return { groups: [], error: 'Connect an Instagram Business account on the Accounts page to see top Instagram posts.' };
+  }
+
+  const token = decrypt(account.accessToken);
+  const igUserId = account.accountId;
+  const names = [...new Set(hashtags.map(toHashtagName).filter(Boolean))].slice(0, 3);
+
+  const groups = [];
+  let lastError = null;
+
+  for (const name of names) {
+    try {
+      const posts = await cached(`ig:${igUserId}:${name}`, 12 * 60 * MIN, async () => {
+        const search = await axios.get('https://graph.facebook.com/ig_hashtag_search', {
+          params: { user_id: igUserId, q: name, access_token: token },
+          timeout: 15000,
+        });
+        const hashtagId = search.data?.data?.[0]?.id;
+        if (!hashtagId) return [];
+
+        const media = await axios.get(`https://graph.facebook.com/${hashtagId}/top_media`, {
+          params: {
+            user_id: igUserId,
+            fields: 'id,caption,media_type,media_url,permalink,like_count,comments_count',
+            limit: 6,
+            access_token: token,
+          },
+          timeout: 15000,
+        });
+
+        return (media.data?.data || []).map(m => ({
+          id: m.id,
+          caption: (m.caption || '').slice(0, 220),
+          mediaType: m.media_type || '',
+          mediaUrl: m.media_type === 'VIDEO' ? '' : (m.media_url || ''),
+          permalink: m.permalink || '',
+          likes: Number(m.like_count) || 0,
+          comments: Number(m.comments_count) || 0,
+        }));
+      }, { refresh });
+
+      groups.push({ hashtag: `#${name}`, posts });
+    } catch (error) {
+      lastError = error.response?.data?.error?.message || error.message;
+      logger.error(`Instagram hashtag search failed for #${name}`, lastError);
+    }
+  }
+
+  if (!groups.length && lastError) {
+    const friendly = friendlyInstagramError(lastError);
+    cache.set(errorKey, { value: friendly, expires: Date.now() + 60 * MIN });
+    return { groups: [], error: friendly };
+  }
+
+  return { groups, error: lastError ? friendlyInstagramError(lastError) : null };
+};
+
 // Wrap a loader so one failing source never breaks the whole response
 const safely = async (label, fn) => {
   try {
@@ -177,5 +261,7 @@ module.exports = {
   fetchGoogleTrends,
   fetchYouTubeTrending,
   fetchHolidays,
+  fetchInstagramTopMedia,
+  toHashtagName,
   parseGoogleTrendsRss,
 };

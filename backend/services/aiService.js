@@ -4,10 +4,11 @@
 // trend-based content ideas and festival / event ideas.
 //
 // Providers (pick one in .env):
+//   AI_PROVIDER=gemini      GEMINI_API_KEY=...      AI_MODEL=gemini-3.5-flash-lite   (free tier available)
 //   AI_PROVIDER=anthropic   ANTHROPIC_API_KEY=...   AI_MODEL=claude-sonnet-5-5
 //   AI_PROVIDER=openai      OPENAI_API_KEY=...      AI_MODEL=<model name>
-//     (works with any OpenAI-compatible API — set AI_BASE_URL, e.g. Gemini:
-//      https://generativelanguage.googleapis.com/v1beta/openai)
+//     (works with any OpenAI-compatible API — set AI_BASE_URL, e.g. Groq:
+//      https://api.groq.com/openai/v1)
 // If AI_PROVIDER is empty, the provider is picked from whichever key is set.
 // ─────────────────────────────────────────────────────────────────────────────
 const axios  = require('axios');
@@ -47,6 +48,7 @@ const LANGUAGE_RULES = {
 const getProvider = () => {
   const explicit = String(process.env.AI_PROVIDER || '').toLowerCase().trim();
   if (explicit) return explicit;
+  if (process.env.GEMINI_API_KEY) return 'gemini';
   if (process.env.ANTHROPIC_API_KEY) return 'anthropic';
   if (process.env.OPENAI_API_KEY) return 'openai';
   return '';
@@ -54,9 +56,74 @@ const getProvider = () => {
 
 const isConfigured = () => {
   const provider = getProvider();
+  if (provider === 'gemini') return Boolean(process.env.GEMINI_API_KEY);
   if (provider === 'anthropic') return Boolean(process.env.ANTHROPIC_API_KEY);
   if (provider === 'openai') return Boolean(process.env.OPENAI_API_KEY);
   return false;
+};
+
+const DEFAULT_MODELS = {
+  gemini: 'gemini-3.5-flash-lite',
+  anthropic: 'claude-sonnet-5-5',
+  openai: 'gpt-4o-mini',
+};
+
+const KEY_NAMES = {
+  gemini: 'GEMINI_API_KEY',
+  anthropic: 'ANTHROPIC_API_KEY',
+  openai: 'OPENAI_API_KEY',
+};
+
+const getModel = () => process.env.AI_MODEL || DEFAULT_MODELS[getProvider()] || '';
+
+// Explains exactly what is missing, so the UI and the startup log can show it
+const getStatus = () => {
+  const provider = getProvider();
+  if (!provider) {
+    return { configured: false, provider: null, model: null, reason: 'No AI key found. Add GEMINI_API_KEY to backend/.env and restart the backend.' };
+  }
+  if (!KEY_NAMES[provider]) {
+    return { configured: false, provider, model: null, reason: `AI_PROVIDER="${provider}" is not supported. Use gemini, anthropic or openai.` };
+  }
+  if (!process.env[KEY_NAMES[provider]]) {
+    return { configured: false, provider, model: null, reason: `AI_PROVIDER is "${provider}" but ${KEY_NAMES[provider]} is empty in backend/.env.` };
+  }
+  return { configured: true, provider, model: getModel(), reason: null };
+};
+
+// Google Gemini (native REST API — works with both "AIza…" and "AQ.…" keys from AI Studio)
+const callGemini = async ({ system, prompt, maxTokens }) => {
+  const model = process.env.AI_MODEL || 'gemini-3.5-flash-lite';
+  const res = await axios.post(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+    {
+      systemInstruction: { parts: [{ text: system }] },
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: {
+        responseMimeType: 'application/json',
+        // Gemini 3 models always "think" first, so leave plenty of room for the answer
+        maxOutputTokens: Math.max(maxTokens * 2, 8192),
+      },
+    },
+    {
+      headers: {
+        'x-goog-api-key': process.env.GEMINI_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      timeout: 120000,
+    }
+  );
+
+  const candidate = res.data?.candidates?.[0];
+  if (!candidate) {
+    const reason = res.data?.promptFeedback?.blockReason;
+    throw new Error(reason ? `Gemini blocked the request (${reason})` : 'Gemini returned no answer');
+  }
+
+  return (candidate.content?.parts || [])
+    .filter(part => part.text && !part.thought) // skip internal "thinking" parts
+    .map(part => part.text)
+    .join('');
 };
 
 const callAnthropic = async ({ system, prompt, maxTokens }) => {
@@ -137,12 +204,16 @@ const extractJson = (text) => {
 
 const askJson = async ({ system, prompt, maxTokens = 4000 }) => {
   if (!isConfigured()) {
-    const err = new Error('AI is not configured. Add ANTHROPIC_API_KEY (or OPENAI_API_KEY) to the backend .env and restart.');
+    const err = new Error(getStatus().reason);
     err.status = 503;
     throw err;
   }
 
-  const call = getProvider() === 'anthropic' ? callAnthropic : callOpenAICompatible;
+  const provider = getProvider();
+  const call =
+    provider === 'gemini' ? callGemini
+      : provider === 'anthropic' ? callAnthropic
+        : callOpenAICompatible;
 
   let lastError;
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -280,7 +351,8 @@ One caption per platform listed above.`.trim();
 };
 
 // ── 2. Trend-based content ideas ─────────────────────────────────────────────
-const generateTrendIdeas = async ({ platforms = [], region = 'IN', niche = '', googleTrends = [], youtubeTrending = [] }) => {
+const generateTrendIdeas = async ({ platforms = [], region = 'IN', niche = '', googleTrends = [], youtubeTrending = [], perPlatform = 2 }) => {
+  const ideasPerPlatform = Math.min(Math.max(Number(perPlatform) || 2, 1), 4);
   const regionCode = normalizeRegion(region);
   const safePlatforms = platforms.length ? platforms : ['facebook', 'instagram', 'youtube', 'twitter'];
 
@@ -312,7 +384,7 @@ Rules:
 - Base ideas on the live signals above. If a trend does not fit the niche, prefer evergreen ideas that suit the niche and say so in "basedOn".
 - Skip tragedies, deaths, crime, disasters, and political controversy — never suggest brands piggyback on them.
 - Respect each platform's native format (Reels/Stories for Instagram, Shorts or long video for YouTube, short text for X, etc.).
-- 2 ideas per platform.
+- ${ideasPerPlatform} ideas per platform.
 
 Return exactly this JSON shape:
 {
@@ -422,6 +494,8 @@ Return exactly this JSON shape, sorted by date:
 module.exports = {
   isConfigured,
   getProvider,
+  getModel,
+  getStatus,
   normalizeRegion,
   REGION_NAMES,
   generatePostSuggestions,

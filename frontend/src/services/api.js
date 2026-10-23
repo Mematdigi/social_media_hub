@@ -197,6 +197,10 @@ export const aiAPI = {
   suggest:  (data)   => api.post('/ai/suggest', data, { timeout: 150000 }),
   trending: (params) => api.get('/ai/trending', { params, timeout: 150000 }),
   events:   (params) => api.get('/ai/events', { params, timeout: 150000 }),
+  // Live Google + YouTube trends only (does not use the AI quota)
+  sources:  (params) => api.get('/ai/trends/sources', { params, timeout: 60000 }),
+  // Top Instagram posts for trending hashtags
+  instagramTrends: (params) => api.get('/ai/trends/instagram', { params, timeout: 60000 }),
 };
 
 // Scheduler API

@@ -15,6 +15,7 @@ const inboxRoutes = require('./routes/inbox');
 const analyticsRoutes = require('./routes/analytics');
 const aiRoutes = require('./routes/ai');
 const { startMediaCleanup } = require('./services/mediaCleanupService');
+const { getStatus: getAIStatus } = require('./services/aiService');
 
 // Import models and services for cron jobs
 const Post = require('./models/Post');
@@ -241,6 +242,14 @@ mongoose.connect(`${MONGO_URL}/${DB_NAME}`)
 
       // 🆕 Configurable server media cleanup (see services/mediaCleanupService.js)
       startMediaCleanup();
+
+      // 🆕 AI Assistant status — check this line in `pm2 logs` after changing .env
+      const aiStatus = getAIStatus();
+      if (aiStatus.configured) {
+        logger.info('🤖', `AI Assistant ready — provider: ${aiStatus.provider}, model: ${aiStatus.model}`);
+      } else {
+        logger.info('⚠️', `AI Assistant not configured — ${aiStatus.reason}`);
+      }
     });
   })
   .catch(err => {

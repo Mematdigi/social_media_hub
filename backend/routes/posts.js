@@ -10,6 +10,13 @@ const logger = require('../utils/logger');
 const { publishPostToPlatforms } = require('../services/publishService');
 const { encrypt, decrypt } = require('../utils/encryption');
 const axios = require('axios');
+const {
+  getMediaDeleteAt,
+  hasLocalMedia,
+  getDefaultRetentionDays,
+  getIntervalMinutes,
+  isDryRun,
+} = require('../services/mediaCleanupService');
 
 const router = express.Router();
 const User = require('../models/User');
@@ -86,7 +93,7 @@ router.post('/upload', authMiddleware, upload.single('file'), (req, res) => {
 // Helper Functions
 // ════════════════════════════════════════════════════════════
 
-const formatPost = (post, accounts = []) => ({
+const formatPost = (post, accounts = [], publisherInfo = null) => ({
   id: post.id,
   userId: post.userId,
   content: post.content,
@@ -125,8 +132,53 @@ const formatPost = (post, accounts = []) => ({
   youtubeCategory:    post.youtubeCategory || '22',
   youtubePrivacy:     post.youtubePrivacy || 'public',
   youtubeMadeForKids: post.youtubeMadeForKids || false,
-  youtubeThumbnail:   post.youtubeThumbnail || null
+  youtubeThumbnail:   post.youtubeThumbnail || null,
+
+  // ─── 🆕 PUBLISHER + SERVER MEDIA RETENTION ─────────────────────
+  publisherInfo,
+  hasLocalMedia:          hasLocalMedia(post),
+  mediaRetentionDays:     post.mediaRetentionDays ?? null,
+  mediaDeleteOn:          post.mediaDeleteOn ? new Date(post.mediaDeleteOn).toISOString() : null,
+  mediaScheduledDeleteAt: getMediaDeleteAt(post)?.toISOString() || null,
+  mediaDeleted:           Boolean(post.mediaDeleted),
+  mediaDeletedAt:         post.mediaDeletedAt ? new Date(post.mediaDeletedAt).toISOString() : null,
 });
+
+// Validates mediaRetentionDays / mediaDeleteOn from a request body.
+// Only returns the keys that were sent, so missing keys leave the post unchanged.
+const parseMediaRetention = (body = {}, { scheduledAt = null, requireFuture = false } = {}) => {
+  const out = {};
+
+  if (body.mediaRetentionDays !== undefined) {
+    if (body.mediaRetentionDays === null || body.mediaRetentionDays === '') {
+      out.mediaRetentionDays = null;
+    } else {
+      const days = Number(body.mediaRetentionDays);
+      if (!Number.isFinite(days) || days < 0 || days > 3650) {
+        throw new Error('Media retention must be between 0 and 3650 days');
+      }
+      out.mediaRetentionDays = days;
+    }
+  }
+
+  if (body.mediaDeleteOn !== undefined) {
+    if (!body.mediaDeleteOn) {
+      out.mediaDeleteOn = null;
+    } else {
+      const date = new Date(body.mediaDeleteOn);
+      if (isNaN(date.getTime())) throw new Error('Invalid media delete date');
+      if (requireFuture && date.getTime() <= Date.now()) {
+        throw new Error('Media delete date must be in the future');
+      }
+      if (scheduledAt && date.getTime() <= new Date(scheduledAt).getTime()) {
+        throw new Error('Media delete date must be after the scheduled publish time');
+      }
+      out.mediaDeleteOn = date;
+    }
+  }
+
+  return out;
+};
 
 const getAccountsForPublish = async (accountIds, selectedPageIds = {}) => {
   const accounts = [];
@@ -393,6 +445,17 @@ router.get('/', authMiddleware, async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════
+// GET /api/posts/settings/media - Server media retention settings
+// ════════════════════════════════════════════════════════════
+router.get('/settings/media', authMiddleware, (req, res) => {
+  res.json({
+    defaultRetentionDays: getDefaultRetentionDays(),
+    cleanupIntervalMinutes: getIntervalMinutes(),
+    dryRun: isDryRun(),
+  });
+});
+
+// ════════════════════════════════════════════════════════════
 // GET /api/posts/:postId
 // ════════════════════════════════════════════════════════════
 // ════════════════════════════════════════════════════════════
@@ -468,6 +531,14 @@ router.post('/', authMiddleware, async (req, res) => {
       return res.status(400).json({ detail: 'At least one account must be selected' });
     }
 
+    // ── Server media retention (optional) ────────────────────
+    let mediaRetention = {};
+    try {
+      mediaRetention = parseMediaRetention(req.body, { scheduledAt, requireFuture: true });
+    } catch (validationError) {
+      return res.status(400).json({ detail: validationError.message });
+    }
+
     // ── Resolve platforms ────────────────────────────────────
     const platforms = [];
     for (const accId of accountIds) {
@@ -518,6 +589,7 @@ router.post('/', authMiddleware, async (req, res) => {
       youtubePrivacy:      youtubePrivacy     || 'public',
       youtubeMadeForKids:  Boolean(youtubeMadeForKids),
       youtubeThumbnail:    youtubeThumbnail   || null, // 🆕 Persisted safely into your Post Schema
+      ...mediaRetention,                                // 🆕 Server media retention settings
     });
 
     await post.save();
@@ -717,7 +789,18 @@ router.put('/:postId', authMiddleware, async (req, res) => {
     if (youtubePrivacy !== undefined)     post.youtubePrivacy = youtubePrivacy;
     if (youtubeMadeForKids !== undefined) post.youtubeMadeForKids = youtubeMadeForKids;
     if (youtubeThumbnail !== undefined)   post.youtubeThumbnail = youtubeThumbnail;
-    
+
+    // 🆕 Server media retention (only validated as "future" when the date actually changed)
+    try {
+      const sentDeleteOn = req.body.mediaDeleteOn ? new Date(req.body.mediaDeleteOn).getTime() : null;
+      const storedDeleteOn = post.mediaDeleteOn ? new Date(post.mediaDeleteOn).getTime() : null;
+      Object.assign(post, parseMediaRetention(req.body, {
+        scheduledAt:   post.status === 'scheduled' ? post.scheduledAt : null,
+        requireFuture: req.body.mediaDeleteOn !== undefined && sentDeleteOn !== storedDeleteOn,
+      }));
+    } catch (validationError) {
+      return res.status(400).json({ detail: validationError.message });
+    }
 
     post.updatedAt = new Date();
     await post.save();
@@ -803,10 +886,52 @@ router.post('/:postId/publish', authMiddleware, async (req, res) => {
       await Post.updateOne({ id: req.params.postId }, { status: 'failed' });
       return res.status(500).json({ detail: 'Failed to publish post' });
     }
-  } catch (error) { 
-    res.status(500).json({ detail: 'Failed to trigger publish' }); 
+  } catch (error) {
+    res.status(500).json({ detail: 'Failed to trigger publish' });
   }
 });
+
+// ════════════════════════════════════════════════════════════
+// PATCH /api/posts/:postId/media-retention
+// Change when the uploaded files are removed from the server.
+// Does NOT re-publish or touch the live post on any platform.
+// ════════════════════════════════════════════════════════════
+router.patch('/:postId/media-retention', authMiddleware, async (req, res) => {
+  try {
+    const post = await Post.findOne({ id: req.params.postId, userId: req.user.id });
+    if (!post) return res.status(404).json({ detail: 'Post not found' });
+    if (post.mediaDeleted) {
+      return res.status(400).json({ detail: 'Media for this post has already been removed from the server' });
+    }
+
+    let changes;
+    try {
+      changes = parseMediaRetention(req.body, {
+        scheduledAt:   post.status === 'scheduled' ? post.scheduledAt : null,
+        requireFuture: Boolean(req.body.mediaDeleteOn),
+      });
+    } catch (validationError) {
+      return res.status(400).json({ detail: validationError.message });
+    }
+
+    await Post.updateOne({ id: post.id }, { $set: { ...changes, updatedAt: new Date() } });
+
+    const updated = { ...post.toObject(), ...changes };
+    const deleteAt = getMediaDeleteAt(updated);
+
+    res.json({
+      id: post.id,
+      mediaRetentionDays:     updated.mediaRetentionDays ?? null,
+      mediaDeleteOn:          updated.mediaDeleteOn ? new Date(updated.mediaDeleteOn).toISOString() : null,
+      mediaScheduledDeleteAt: deleteAt ? deleteAt.toISOString() : null,
+      mediaDeleted:           false,
+    });
+  } catch (error) {
+    logger.error('Failed to update media retention', error);
+    res.status(500).json({ detail: 'Failed to update media retention' });
+  }
+});
+
 // ════════════════════════════════════════════════════════════════
 // POST /upload-chunk - Chunked upload for large files
 // ════════════════════════════════════════════════════════════════
