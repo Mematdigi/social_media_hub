@@ -493,7 +493,7 @@ export const PostForm = ({ initialData = null, initialPost = null, onSubmit, loa
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-8 max-w-4xl mx-auto pb-12">
+    <form onSubmit={handleSubmit} className="space-y-8 mx-auto pb-12">
 
       {/* ── 🆕 What's trending (collapsible) — pick a topic to write about ── */}
       <AIAssistPanel

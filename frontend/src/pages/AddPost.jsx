@@ -96,7 +96,7 @@ export default function AddPost() {
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.1 }}
-        className="max-w-2xl"
+        // className="max-w-2xl"
       >
         <div className="bg-white rounded-3xl border border-slate-100 p-6 md:p-8 shadow-card">
           <PostForm onSubmit={handleSubmit} loading={loading} />
