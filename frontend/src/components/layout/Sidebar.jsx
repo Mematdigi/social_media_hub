@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { LayoutDashboard, Link2, FileText, Calendar, Inbox, BarChart3, ChevronLeft, ChevronRight, LogOut, Sparkles } from 'lucide-react';
+import { LayoutDashboard, Link2, FileText, Calendar, Inbox, BarChart3, ChevronLeft, ChevronRight, LogOut, Sparkles, Bot } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useAccounts } from '../../context/AccountsContext';
 import { inboxAPI } from '../../services/api';
@@ -12,6 +12,7 @@ const navItems = [
   { path: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
   { path: '/accounts', icon: Link2, label: 'Accounts' },
   { path: '/posts', icon: FileText, label: 'Posts' },
+  { path: '/agent', icon: Bot, label: 'AI Agent' }, // 🆕
   { path: '/scheduler', icon: Calendar, label: 'Scheduler' },
   { path: '/inbox', icon: Inbox, label: 'Inbox', showBadge: true },
   { path: '/analytics', icon: BarChart3, label: 'Analytics' },

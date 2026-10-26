@@ -203,6 +203,16 @@ export const aiAPI = {
   instagramTrends: (params) => api.get('/ai/trends/instagram', { params, timeout: 60000 }),
 };
 
+// 🆕 AI Agent API (Claude) — chat, generate/enhance images, post & schedule
+export const agentAPI = {
+  status:        ()     => api.get('/agent/status'),
+  sessions:      ()     => api.get('/agent/sessions'),
+  session:       (id)   => api.get(`/agent/sessions/${id}`),
+  deleteSession: (id)   => api.delete(`/agent/sessions/${id}`),
+  chat:          (data) => api.post('/agent/chat', data, { timeout: 600000 }),      // 10 min (image generation)
+  confirm:       (data) => api.post('/agent/confirm', data, { timeout: 1500000 }),  // 25 min (video uploads)
+};
+
 // Scheduler API
 export const schedulerAPI = {
   getCalendar: (month, year) => api.get('/scheduler/calendar', { params: { month, year } }),

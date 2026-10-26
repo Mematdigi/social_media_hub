@@ -16,6 +16,7 @@ import EditPost from './pages/EditPost';
 import Scheduler from './pages/Scheduler';
 import Inbox from './pages/Inbox';
 import Analytics from './pages/Analytics';
+import AIAgent from './pages/AIAgent'; // 🆕 AI Agent
 import PrivacyPolicy from './pages/PrivacyPolicy';
 import TermsAndConditions from './pages/TermsCondition';
 // import Home from './pages/Home';
@@ -77,6 +78,7 @@ function AppRoutes() {
       <Route path="/scheduler" element={<ProtectedRoute><Scheduler /></ProtectedRoute>} />
       <Route path="/inbox" element={<ProtectedRoute><Inbox /></ProtectedRoute>} />
       <Route path="/analytics" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
+      <Route path="/agent" element={<ProtectedRoute><AIAgent /></ProtectedRoute>} />
 
       {/* Redirects */}
       <Route path="/" element={<Navigate to="/dashboard" replace />} />

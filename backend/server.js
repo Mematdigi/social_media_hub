@@ -14,8 +14,10 @@ const schedulerRoutes = require('./routes/scheduler');
 const inboxRoutes = require('./routes/inbox');
 const analyticsRoutes = require('./routes/analytics');
 const aiRoutes = require('./routes/ai');
+const agentRoutes = require('./routes/agent'); // 🆕 AI Agent
 const { startMediaCleanup } = require('./services/mediaCleanupService');
 const { getStatus: getAIStatus } = require('./services/aiService');
+const { getStatus: getAgentStatus } = require('./services/agentService');
 
 // Import models and services for cron jobs
 const Post = require('./models/Post');
@@ -45,6 +47,7 @@ app.use('/api/scheduler', schedulerRoutes);
 app.use('/api/inbox', inboxRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/ai', aiRoutes);
+app.use('/api/agent', agentRoutes); // 🆕 AI Agent
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -249,6 +252,14 @@ mongoose.connect(`${MONGO_URL}/${DB_NAME}`)
         logger.info('🤖', `AI Assistant ready — provider: ${aiStatus.provider}, model: ${aiStatus.model}`);
       } else {
         logger.info('⚠️', `AI Assistant not configured — ${aiStatus.reason}`);
+      }
+
+      // 🆕 AI Agent status
+      const agentStatus = getAgentStatus();
+      if (agentStatus.configured) {
+        logger.info('🤖', `AI Agent ready — ${agentStatus.provider} (${agentStatus.model}), images: ${agentStatus.images.configured ? `${agentStatus.images.provider} (${agentStatus.images.model})` : agentStatus.images.reason}`);
+      } else {
+        logger.info('⚠️', `AI Agent not configured — ${agentStatus.reason}`);
       }
     });
   })
