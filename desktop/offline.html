@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>SocialHub — offline</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin: 0; height: 100vh; display: grid; place-items: center; background: #F8FAFC;
+         font-family: "DM Sans", -apple-system, "Segoe UI", Roboto, sans-serif; color: #0F172A; }
+  .card { text-align: center; max-width: 420px; padding: 40px 32px; background: #fff; border-radius: 28px;
+          border: 1px solid #E2E8F0; box-shadow: 0 12px 24px rgba(15,23,42,.06); }
+  .logo { width: 64px; height: 64px; border-radius: 20px; margin: 0 auto 18px;
+          background: linear-gradient(135deg,#6366F1,#8B5CF6,#EC4899); display: grid; place-items: center;
+          color: #fff; font-size: 30px; }
+  h1 { font-size: 22px; margin: 0 0 8px; }
+  p { color: #64748B; line-height: 1.5; margin: 0 0 22px; }
+  button { border: 0; cursor: pointer; color: #fff; font-weight: 700; font-size: 15px; padding: 12px 26px;
+           border-radius: 999px; background: linear-gradient(90deg,#6366F1,#8B5CF6,#EC4899);
+           box-shadow: 0 4px 14px rgba(99,102,241,.39); }
+  #detail { font-size: 12px; color: #94A3B8; margin-top: 16px; word-break: break-all; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">✦</div>
+    <h1>Can’t reach SocialHub</h1>
+    <p>Check your internet connection. The app will try again when you click the button.</p>
+    <button onclick="history.back()">Try again</button>
+    <div id="detail"></div>
+  </div>
+  <script>
+    const q = new URLSearchParams(location.search);
+    if (q.get('error')) document.getElementById('detail').textContent = q.get('error');
+    if (q.get('retry')) document.querySelector('button').onclick = () => { location.href = q.get('retry'); };
+  </script>
+</body>
+</html>

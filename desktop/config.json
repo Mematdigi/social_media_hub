@@ -1,0 +1,6 @@
+{
+  "mode": "bundled",
+  "apiUrl": "https://media.mematdigi.com",
+  "webUrl": "https://media.mematdigi.com",
+  "devUrl": "http://localhost:3000"
+}

@@ -1,0 +1,486 @@
+// ============================================================
+// _components.scss — Buttons, Inputs, Badges, Cards, Misc
+// ============================================================
+@use 'variables' as *;
+@use 'mixins'    as *;
+
+// ── Buttons ──────────────────────────────────────────────────
+.btn-primary {
+  @include btn-base;
+  padding: 0.625rem 1.25rem;
+  font-size: $text-sm;
+  border-radius: $radius-full;
+  background: $indigo-500;
+  color: $white;
+  box-shadow: $shadow-button;
+
+  @include sm {
+    padding: 0.75rem 1.5rem;
+    font-size: $text-base;
+  }
+
+  @include hover-device {
+    &:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba($indigo-500, 0.45);
+    }
+  }
+}
+
+.btn-secondary {
+  @include btn-base;
+  padding: 0.625rem 1.25rem;
+  font-size: $text-sm;
+  border-radius: $radius-full;
+  background: $white;
+  color: $slate-700;
+  border: 1.5px solid $slate-200;
+  box-shadow: $shadow-sm;
+
+  @include sm {
+    padding: 0.75rem 1.5rem;
+    font-size: $text-base;
+  }
+
+  @include hover-device {
+    &:hover {
+      border-color: $slate-300;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+      transform: translateY(-1px);
+    }
+  }
+}
+
+.btn-gradient {
+  @include btn-base;
+  padding: 0.625rem 1.25rem;
+  font-size: $text-sm;
+  border-radius: $radius-full;
+  background: linear-gradient(135deg, $indigo-500, $purple-500);
+  color: $white;
+  box-shadow: $shadow-button;
+
+  @include sm {
+    padding: 0.75rem 1.5rem;
+    font-size: $text-base;
+  }
+
+  @include hover-device {
+    &:hover {
+      background: linear-gradient(135deg, $indigo-600, $purple-600);
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba($indigo-500, 0.45);
+    }
+  }
+}
+
+.btn-icon {
+  @include btn-base;
+  @include flex-center;
+  width: 44px;
+  height: 44px;
+  border-radius: $radius-full;
+  background: transparent;
+  border: none;
+  color: $slate-600;
+  transition: background $transition-base, color $transition-base;
+
+  &:hover { background: $slate-100; color: $slate-900; }
+}
+
+// Full-width on mobile, auto on tablet+
+.btn-full-mobile {
+  width: 100%;
+  @include sm { width: auto; }
+}
+
+// ── Inputs ───────────────────────────────────────────────────
+.input-primary {
+  @include input-base;
+
+  &.is-error {
+    border-color: $red-300;
+    &:focus { box-shadow: 0 0 0 4px rgba($red-500, 0.1); }
+  }
+}
+
+.input-primary.textarea {
+  height: auto;
+  min-height: 100px;
+  padding: 0.75rem 1rem;
+  resize: vertical;
+}
+
+// Password wrapper
+.input-password-wrap {
+  position: relative;
+
+  input { padding-right: 3rem; }
+
+  &__toggle {
+    position: absolute;
+    right: 0.875rem;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: $slate-400;
+    padding: 0;
+    @include flex-center;
+    min-height: unset;
+
+    &:hover { color: $slate-600; }
+  }
+}
+
+// ── Badges ───────────────────────────────────────────────────
+.badge-connected {
+  @include badge-base;
+  background: $green-100;
+  color: $green-700;
+}
+
+.badge-draft {
+  @include badge-base;
+  background: $yellow-100;
+  color: $yellow-700;
+}
+
+.badge-published {
+  @include badge-base;
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.badge-scheduled {
+  @include badge-base;
+  background: #ede9fe;
+  color: #6d28d9;
+}
+
+.badge-failed {
+  @include badge-base;
+  background: $red-50;
+  color: $red-600;
+}
+
+// ── Stat Card ────────────────────────────────────────────────
+.stat-card {
+  @include card;
+  transition: border-color $transition-base, box-shadow $transition-base, transform $transition-base;
+
+  @include hover-device {
+    &:hover {
+      border-color: $indigo-100;
+      box-shadow: $shadow-card-hover;
+    }
+  }
+
+  &__label {
+    font-size: $text-sm;
+    font-weight: 500;
+    color: $slate-500;
+    margin: 0 0 0.25rem;
+  }
+
+  &__value {
+    font-family: $font-heading;
+    font-size: $text-3xl;
+    font-weight: 700;
+    color: $slate-900;
+    line-height: 1.1;
+  }
+
+  &__change {
+    @include flex-start(0.25rem);
+    margin-top: 0.5rem;
+    font-size: $text-sm;
+    font-weight: 500;
+
+    &--positive { color: $green-600; }
+    &--negative { color: $red-600; }
+  }
+
+  &__icon {
+    @include flex-center;
+    width: 3rem;
+    height: 3rem;
+    border-radius: $radius-xl;
+    flex-shrink: 0;
+    transition: transform $transition-base;
+
+    .stat-card:hover & { transform: scale(1.1); }
+  }
+}
+
+// Stat card responsive grid
+.stat-card-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: clamp(0.75rem, 2vw, 1.25rem);
+
+  @include xs  { grid-template-columns: repeat(2, 1fr); }
+  @include lg  { grid-template-columns: repeat(4, 1fr); }
+}
+
+// ── Platform Card ────────────────────────────────────────────
+.platform-card {
+  @include card;
+  cursor: pointer;
+  transition: transform $transition-base, box-shadow $transition-base, border-color $transition-base;
+
+  @include hover-device {
+    &:hover { transform: translateY(-4px); box-shadow: $shadow-card-hover; }
+  }
+
+  @include touch-device {
+    &:active { transform: scale(0.97); opacity: 0.9; }
+  }
+}
+
+.platform-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: clamp(0.75rem, 2vw, 1rem);
+
+  @include xs  { grid-template-columns: repeat(3, 1fr); }
+  @include md  { grid-template-columns: repeat(4, 1fr); }
+  @include lg  { grid-template-columns: repeat(5, 1fr); }
+  @include xl  { grid-template-columns: repeat(6, 1fr); }
+}
+
+// ── Platform Icon ────────────────────────────────────────────
+.platform-icon {
+  @include flex-center;
+  width: clamp(1.75rem, 5vw, 2.25rem);
+  height: clamp(1.75rem, 5vw, 2.25rem);
+  border-radius: $radius-full;
+  flex-shrink: 0;
+}
+
+// ── Metric Card (Analytics) ──────────────────────────────────
+.metric-card {
+  @include card;
+  transition: box-shadow $transition-base;
+
+  @include hover-device {
+    &:hover { box-shadow: $shadow-card-hover; }
+  }
+
+  &__header { @include flex-between; align-items: flex-start; }
+
+  &__label {
+    font-size: $text-sm;
+    font-weight: 500;
+    color: $slate-500;
+    margin: 0 0 0.25rem;
+  }
+
+  &__value {
+    font-family: $font-heading;
+    font-size: $text-3xl;
+    font-weight: 700;
+    color: $slate-900;
+  }
+
+  &__change {
+    @include flex-start(0.25rem);
+    margin-top: 0.5rem;
+    font-size: $text-sm;
+    font-weight: 500;
+
+    &--up   { color: $green-600; }
+    &--down { color: $red-600; }
+  }
+
+  &__icon {
+    @include flex-center;
+    width: 3rem;
+    height: 3rem;
+    border-radius: $radius-xl;
+    flex-shrink: 0;
+  }
+}
+
+// ── Spinner / Loader ─────────────────────────────────────────
+.spinner {
+  border: 3px solid $slate-100;
+  border-top: 3px solid $indigo-500;
+  border-radius: $radius-full;
+  width: 24px;
+  height: 24px;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+
+  &--sm { width: 16px; height: 16px; border-width: 2px; }
+  &--lg { width: 36px; height: 36px; }
+}
+
+// ── Skeleton ─────────────────────────────────────────────────
+.skeleton { @include skeleton; }
+
+// ── Toast ────────────────────────────────────────────────────
+.toast-container {
+  position: fixed;
+  z-index: $z-toast;
+  bottom: calc(#{$bottom-nav-height} + env(safe-area-inset-bottom) + 0.5rem);
+  left: 1rem;
+  right: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  pointer-events: none;
+
+  @include md {
+    bottom: 1.5rem;
+    right: 1.5rem;
+    left: auto;
+    max-width: 380px;
+  }
+}
+
+.toast {
+  background: $white;
+  border-radius: $radius-xl;
+  padding: 0.875rem 1rem;
+  box-shadow: $shadow-dropdown;
+  border: 1px solid $slate-200;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  pointer-events: auto;
+  animation: slideIn 0.3s ease-out;
+}
+
+// ── Modal ─────────────────────────────────────────────────────
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: $z-modal;
+  background: rgba($slate-900, 0.5);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  display: flex;
+  align-items: flex-end;
+  animation: fadeIn 0.2s ease-out;
+
+  @include sm { align-items: center; justify-content: center; padding: 1rem; }
+}
+
+.modal-panel {
+  width: 100%;
+  max-height: 90dvh;
+  border-radius: $radius-xl $radius-xl 0 0;
+  overflow-y: auto;
+  padding: 1.5rem 1rem;
+  padding-bottom: max(1.5rem, env(safe-area-inset-bottom));
+  background: $white;
+  animation: slideUp 0.35s ease-out;
+
+  @include sm {
+    width: auto;
+    min-width: 480px;
+    max-width: 640px;
+    max-height: 85dvh;
+    border-radius: $radius-xl;
+    padding: 2rem;
+    animation: slideIn 0.3s ease-out;
+  }
+}
+
+// ── Filter Tabs ──────────────────────────────────────────────
+.filter-tabs {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+
+  &__tab {
+    @include btn-base;
+    padding: 0.5rem 1rem;
+    border-radius: $radius-full;
+    font-size: $text-sm;
+    font-weight: 500;
+    background: $slate-100;
+    color: $slate-600;
+    min-height: 38px;
+    border: none;
+
+    @include hover-device {
+      &:hover { background: $slate-200; }
+    }
+
+    &.active {
+      background: $indigo-50;
+      color: $indigo-600;
+      font-weight: 600;
+    }
+
+    &__count {
+      font-size: $text-xs;
+      opacity: 0.75;
+    }
+  }
+}
+
+// ── Date range toggle (Analytics) ───────────────────────────
+.date-range-toggle {
+  display: flex;
+  background: $slate-100;
+  border-radius: $radius-lg;
+  padding: 0.25rem;
+
+  &__btn {
+    padding: 0.5rem 1rem;
+    border-radius: $radius-md;
+    font-weight: 500;
+    font-size: $text-sm;
+    border: none;
+    background: transparent;
+    color: $slate-600;
+    cursor: pointer;
+    transition: background $transition-base, color $transition-base, box-shadow $transition-base;
+    min-height: 38px;
+
+    &.active {
+      background: $white;
+      box-shadow: $shadow-sm;
+      color: $indigo-600;
+    }
+  }
+}
+
+// ── Empty State ──────────────────────────────────────────────
+.empty-state {
+  @include flex-center;
+  flex-direction: column;
+  text-align: center;
+  padding: clamp(2rem, 6vw, 4rem) clamp(1rem, 4vw, 2rem);
+
+  &__icon {
+    @include flex-center;
+    width: clamp(4rem, 10vw, 5rem);
+    height: clamp(4rem, 10vw, 5rem);
+    border-radius: $radius-full;
+    background: $slate-100;
+    margin-bottom: 1rem;
+
+    svg { color: $slate-400; }
+  }
+
+  &__title {
+    font-family: $font-heading;
+    font-size: $text-xl;
+    font-weight: 700;
+    color: $slate-900;
+    margin: 0 0 0.5rem;
+  }
+
+  &__desc {
+    font-size: $text-sm;
+    color: $slate-500;
+    margin: 0 0 1.5rem;
+    max-width: 28rem;
+  }
+}

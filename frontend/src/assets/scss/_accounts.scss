@@ -1,0 +1,127 @@
+// ============================================================
+// _accounts.scss — Connected Accounts page
+// ============================================================
+@use 'variables' as *;
+@use 'mixins'    as *;
+
+// ── Counter badge ────────────────────────────────────────────
+.accounts-counter {
+  padding: 0.375rem 1rem;
+  border-radius: $radius-full;
+  background: $indigo-50;
+  border: 1px solid $indigo-100;
+  font-size: $text-sm;
+  font-weight: 600;
+  color: $indigo-600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+// ── Platforms grid ───────────────────────────────────────────
+.accounts-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: clamp(0.75rem, 2vw, 1rem);
+
+  @include xs  { grid-template-columns: repeat(2, 1fr); }
+  @include sm  { grid-template-columns: repeat(3, 1fr); }
+  @include md  { grid-template-columns: repeat(3, 1fr); }
+  @include lg  { grid-template-columns: repeat(4, 1fr); }
+  @include xl  { grid-template-columns: repeat(5, 1fr); }
+}
+
+// ── Platform card ────────────────────────────────────────────
+.platform-connect-card {
+  @include card(clamp(1rem, 3vw, 1.25rem));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.75rem;
+  transition: transform $transition-base, box-shadow $transition-base, border-color $transition-base;
+  cursor: pointer;
+
+  @include hover-device {
+    &:hover {
+      transform: translateY(-4px);
+      box-shadow: $shadow-card-hover;
+    }
+  }
+
+  @include touch-device {
+    &:active { transform: scale(0.97); }
+  }
+
+  &.connected {
+    border-color: $green-100;
+    background: linear-gradient(135deg, $white 60%, $green-50);
+  }
+
+  &__icon-wrap {
+    @include flex-center;
+    width: clamp(3rem, 8vw, 3.5rem);
+    height: clamp(3rem, 8vw, 3.5rem);
+    border-radius: $radius-xl;
+  }
+
+  &__name {
+    font-weight: 600;
+    font-size: $text-sm;
+    color: $slate-900;
+    text-transform: capitalize;
+    margin: 0;
+  }
+
+  &__account {
+    font-size: $text-xs;
+    color: $slate-500;
+    margin: -0.375rem 0 0;
+    @include truncate;
+    max-width: 100%;
+  }
+
+  &__status {
+    font-size: $text-xs;
+  }
+
+  &__action {
+    @include btn-base;
+    width: 100%;
+    padding: 0.5rem 0.75rem;
+    border-radius: $radius-lg;
+    font-size: $text-xs;
+    font-weight: 600;
+    min-height: 38px;
+
+    &--connect {
+      background: $indigo-500;
+      color: $white;
+
+      @include hover-device {
+        &:hover { background: $indigo-600; }
+      }
+    }
+
+    &--disconnect {
+      background: $slate-100;
+      color: $slate-600;
+      border: none;
+
+      @include hover-device {
+        &:hover { background: $red-50; color: $red-600; }
+      }
+    }
+  }
+}
+
+// ── Connected indicator dot ───────────────────────────────────
+.connected-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: $radius-full;
+  background: $green-500;
+  display: inline-block;
+  flex-shrink: 0;
+
+  &--disconnected { background: $slate-300; }
+}
