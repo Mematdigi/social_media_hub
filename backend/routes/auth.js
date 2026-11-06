@@ -101,4 +101,63 @@ router.get('/me', authMiddleware, (req, res) => {
   res.json(formatUser(req.user));
 });
 
+// ── Google Play: account deletion ───────────────────────────────────────────
+// POST /api/auth/delete-account  { password }
+// Permanently deletes the user and everything stored for them.
+router.post('/delete-account', authMiddleware, async (req, res) => {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const Post = require('../models/Post');
+    const SocialAccount = require('../models/SocialAccount');
+    const Message = require('../models/Message');
+    const Analytics = require('../models/Analytics');
+    const AgentSession = require('../models/AgentSession');
+    const ContentReport = require('../models/ContentReport');
+    const { getLocalUploadName } = require('../services/mediaCleanupService');
+
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    const user = await User.findOne({ id: req.user.id });
+    // 400 (not 401) so the apps don't sign the user out on a typo
+    if (!password || !user || !(await bcrypt.compare(password, user.password))) {
+      return res.status(400).json({ detail: 'That password is wrong.' });
+    }
+    const userId = user.id;
+
+    // This user's uploaded files (posts + AI Agent images/attachments)
+    const files = new Set();
+    const addUrl = (url) => { const name = getLocalUploadName(url); if (name) files.add(name); };
+    const posts = await Post.find({ userId }).select('mediaUrls youtubeThumbnail').lean();
+    posts.forEach(p => { (p.mediaUrls || []).forEach(addUrl); addUrl(p.youtubeThumbnail); });
+    const sessions = await AgentSession.find({ userId }).select('display').lean();
+    sessions.forEach(s => (s.display || []).forEach(d => {
+      addUrl(d.url); addUrl(d.beforeUrl);
+      (d.attachments || []).forEach(a => addUrl(a.url));
+      (d.data?.media_urls || []).forEach(addUrl);
+    }));
+
+    await Promise.all([
+      Post.deleteMany({ userId }),
+      SocialAccount.deleteMany({ userId }),
+      Message.deleteMany({ userId }),
+      Analytics.deleteMany({ userId }),
+      AgentSession.deleteMany({ userId }),
+      ContentReport.deleteMany({ userId }),
+    ]);
+    await User.deleteOne({ id: userId });
+
+    const uploadsDir = path.resolve(process.env.UPLOADS_DIR || path.join(__dirname, '../uploads'));
+    for (const name of files) {
+      const full = path.join(uploadsDir, name);
+      if (full.startsWith(uploadsDir + path.sep)) await fs.promises.unlink(full).catch(() => {});
+    }
+
+    logger.info('🗑️', `Account deleted: ${userId}`);
+    res.json({ ok: true });
+  } catch (error) {
+    logger.error('Delete account failed', error.message);
+    res.status(500).json({ detail: 'Could not delete the account. Please try again.' });
+  }
+});
+
 module.exports = router;

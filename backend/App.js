@@ -19,6 +19,7 @@ import Analytics from './pages/Analytics';
 import AIAgent from './pages/AIAgent'; // 🆕 AI Agent
 import PrivacyPolicy from './pages/PrivacyPolicy';
 import TermsAndConditions from './pages/TermsCondition';
+import DeleteAccount from './pages/DeleteAccount'; // Google Play: account deletion page
 // import Home from './pages/Home';
 
 // Protected Route Component
@@ -67,6 +68,7 @@ function AppRoutes() {
       <Route path="/register" element={<PublicRoute><Register /></PublicRoute>} />
       <Route path="/privacy-policy" element={<PublicRoute><PrivacyPolicy/></PublicRoute>} />
       <Route path="/terms-condition" element={<PublicRoute><TermsAndConditions/></PublicRoute>} />
+      <Route path="/delete-account" element={<DeleteAccount />} />
       {/* <Route path="/" element={<PublicRoute><Home/></PublicRoute>}/> */}
 
       {/* Protected Routes */}

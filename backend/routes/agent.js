@@ -142,4 +142,33 @@ router.post('/confirm', authMiddleware, async (req, res) => {
   }
 });
 
+// ── Google Play: report AI-generated content ────────────────────────────────
+// POST /api/agent/report  { sessionId, itemId, reason }
+router.post('/report', authMiddleware, async (req, res) => {
+  try {
+    const ContentReport = require('../models/ContentReport');
+    const reason = ['offensive', 'misleading', 'other'].includes(req.body?.reason) ? req.body.reason : 'other';
+    const session = await AgentSession.findOne({ id: String(req.body?.sessionId || ''), userId: req.user.id }).lean();
+    if (!session) return res.status(404).json({ detail: 'Chat not found' });
+    const item = (session.display || []).find(d => d.id === String(req.body?.itemId || ''));
+    if (!item || !['assistant', 'image'].includes(item.type)) {
+      return res.status(400).json({ detail: 'Only AI messages and images can be reported.' });
+    }
+
+    await ContentReport.create({
+      id: uuidv4(),
+      userId: req.user.id,
+      sessionId: session.id,
+      itemId: item.id,
+      itemType: item.type,
+      content: String(item.type === 'image' ? item.url : item.text || '').slice(0, 4000),
+      reason,
+    });
+    logger.info('🚩', `AI content reported (${reason}) by ${req.user.id}`);
+    res.status(201).json({ ok: true });
+  } catch (error) {
+    sendError(res, error, 'Could not send the report');
+  }
+});
+
 module.exports = router;
