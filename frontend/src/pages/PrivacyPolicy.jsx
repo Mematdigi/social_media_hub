@@ -4,7 +4,7 @@ import { useEffect } from "react";
 // ── Company details — CHECK / FILL THESE BEFORE PUBLISHING ──────────────────
 const COMPANY = {
   name: "MematDigi",                                   // legal company name
-  email: "hello@mematdigi.com",                        // privacy contact email
+  email: "vikas@mematdigi.com",                        // privacy contact email
   website: "www.mematdigi.com",
   appUrl: "https://media.mematdigi.com",
   address: "", // TODO: registered office address, e.g. "Office no., Street, City, State, PIN, India"

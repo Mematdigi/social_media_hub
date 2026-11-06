@@ -16115,7 +16115,7 @@ const sections = [
       },
       {
         label: "Manual Deletion Requests:",
-        text: "You may also request complete data deletion by emailing us from your registered email address at hello@mematdigi.com. Our engineering team will execute your data deletion manually within 24 hours.",
+        text: "You may also request complete data deletion by emailing us from your registered email address at vikas@mematdigi.com. Our engineering team will execute your data deletion manually within 24 hours.",
       },
     ],
   },
@@ -16129,7 +16129,7 @@ const sections = [
     title: "Contact Us",
     body: "If you have questions or comments about this Privacy Policy, please contact us at:",
     contact: [
-      { label: "Email", value: "hello@mematdigi.com", href: "mailto:hello@mematdigi.com" },
+      { label: "Email", value: "vikas@mematdigi.com", href: "mailto:vikas@mematdigi.com" },
       { label: "Website", value: "www.mematdigi.com", href: "https://www.mematdigi.com" },
     ],
   },

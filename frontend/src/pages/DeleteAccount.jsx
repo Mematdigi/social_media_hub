@@ -70,7 +70,7 @@ export default function DeleteAccount() {
             </ul>
             <p className="mt-3 text-sm text-slate-500">
               Posts already published on Facebook, Instagram, YouTube or X stay on those platforms. Deletion happens immediately
-              and can’t be undone. Can’t sign in? Email us from your registered email address at <a href="mailto:hello@mematdigi.com" className="text-indigo-600 font-medium">hello@mematdigi.com</a>.
+              and can’t be undone. Can’t sign in? Email us from your registered email address at <a href="mailto:vikas@mematdigi.com" className="text-indigo-600 font-medium">vikas@mematdigi.com</a>.
             </p>
 
             <form onSubmit={submit} className="mt-6 space-y-4" noValidate>
