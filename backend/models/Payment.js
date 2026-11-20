@@ -18,7 +18,8 @@ const paymentSchema = new mongoose.Schema({
     image: { type: Number, default: 0 },
     video: { type: Number, default: 0 },
   },
-  razorpayOrderId:   { type: String, required: true, unique: true },
+  gateway:   { type: String, enum: ['razorpay', 'dummy'], default: 'razorpay', index: true }, // 🆕 dummy = test payment, no money
+  razorpayOrderId:   { type: String, required: true, unique: true },   // for dummy: dummy_order_…
   razorpayPaymentId: { type: String, default: null },
   method:    { type: String, default: null },           // upi, card, netbanking…
   status:    { type: String, enum: ['created', 'paid', 'failed'], default: 'created', index: true },

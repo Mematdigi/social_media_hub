@@ -4,6 +4,8 @@
 // POST /api/payments/verify  → { razorpay_order_id, razorpay_payment_id, razorpay_signature }
 // GET  /api/payments         → my payments
 // POST /api/payments/webhook → Razorpay server → us (mounted in server.js with a raw body)
+// POST /api/payments/dummy/order    → { planId }  🆕 test payment (no money)
+// POST /api/payments/dummy/complete → { orderId, outcome: 'success' | 'failed', method }
 // ─────────────────────────────────────────────────────────────────────────────
 const express        = require('express');
 const authMiddleware = require('../middleware/auth');
@@ -51,6 +53,28 @@ router.post('/verify', authMiddleware, async (req, res) => {
     });
   } catch (error) {
     sendError(res, error, 'Could not verify the payment');
+  }
+});
+
+// 🆕 Dummy (test) payments
+router.post('/dummy/order', authMiddleware, async (req, res) => {
+  try {
+    await credits.loadAdmins();
+    if (tooMany(req.user.id)) return res.status(429).json({ detail: 'Too many attempts. Wait a minute and try again.' });
+    res.json(await razorpay.createDummyOrder(req.user, req.body?.planId));
+  } catch (error) {
+    sendError(res, error, 'Could not start the test payment');
+  }
+});
+
+router.post('/dummy/complete', authMiddleware, async (req, res) => {
+  try {
+    await credits.loadAdmins();
+    const { payment, alreadyDone } = await razorpay.completeDummy(req.user, req.body || {});
+    const wallet = await credits.getWallet(req.user.id);
+    res.json({ ok: true, test: true, alreadyDone, packName: payment?.packName, ...credits.formatWallet(wallet, req.user) });
+  } catch (error) {
+    sendError(res, error, 'Test payment failed');
   }
 });
 

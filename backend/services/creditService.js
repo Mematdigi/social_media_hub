@@ -11,8 +11,12 @@
 // never uses credits. Trending / festival ideas are cheap and cached, so they are free.
 //
 // .env:
-//   ADMIN_EMAILS=you@company.com,partner@company.com   who can open the Admin page
-//                                                     (admins never run out of credits)
+//   ADMIN_EMAILS=you@company.com,partner@company.com   who can open the Admin page (more can be
+//                                                     added on the Admin page → Admins)
+//   COMPANY_EMAIL_DOMAINS=mematdigi.com               everyone with this email domain is a
+//                                                     "company" account: free + tracked
+// Company accounts and admins are never charged, but every AI use is still recorded
+// (with free: true) so the Admin → Usage tab shows what your team uses and what it costs you.
 // Plans, prices and free credits are edited on the Admin page (stored in MongoDB).
 // ─────────────────────────────────────────────────────────────────────────────
 const { v4: uuidv4 }      = require('uuid');
@@ -40,6 +44,9 @@ const DEFAULT_SETTINGS = {
       features: ['2 AI-written posts', '2 AI images', 'Use any time'] },
   ],
   gstPercent: 0, // 0 = prices already include GST; 18 = add 18% GST on top at checkout
+  // Your approximate Google AI cost per credit (₹) — used only for the Admin → Usage cost estimate
+  costPerCredit: { post: 3, image: 7, video: 80 },
+  admins: [],     // extra admin emails added on the Admin page (ADMIN_EMAILS in .env always count too)
   paymentInstructions:
     'After you send the request, our team will contact you on your registered email with the payment details. ' +
     'Your credits are added as soon as the payment is confirmed.',
@@ -48,6 +55,7 @@ const DEFAULT_SETTINGS = {
 const SETTINGS_KEY = 'credits';
 let settingsCache = null;
 let settingsCacheAt = 0;
+let dbAdmins = new Set(); // admin emails saved on the Admin page
 
 const cleanCredits = (c = {}) => Object.fromEntries(KINDS.map(k => [k, Math.max(0, Math.floor(Number(c?.[k]) || 0))]));
 
@@ -66,6 +74,10 @@ const normalizeSettings = (value = {}) => ({
   plans: (Array.isArray(value.plans) && value.plans.length ? value.plans : DEFAULT_SETTINGS.plans).map((p, i) => cleanPack(p, `plan${i + 1}`)),
   topups: (Array.isArray(value.topups) ? value.topups : DEFAULT_SETTINGS.topups).map((p, i) => ({ ...cleanPack(p, `topup${i + 1}`), period: 'once' })),
   gstPercent: Math.min(28, Math.max(0, Number(value.gstPercent ?? DEFAULT_SETTINGS.gstPercent) || 0)),
+  costPerCredit: Object.fromEntries(KINDS.map(k => [k, Math.max(0, Number(value.costPerCredit?.[k] ?? DEFAULT_SETTINGS.costPerCredit[k]) || 0)])),
+  admins: [...new Set((Array.isArray(value.admins) ? value.admins : [])
+    .map(e => String(e).trim().toLowerCase())
+    .filter(e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)))].slice(0, 50),
   paymentInstructions: String(value.paymentInstructions ?? DEFAULT_SETTINGS.paymentInstructions).slice(0, 1000),
 });
 
@@ -74,6 +86,7 @@ const getSettings = async () => {
   const doc = await AppSetting.findOne({ key: SETTINGS_KEY }).lean();
   settingsCache = normalizeSettings(doc?.value || DEFAULT_SETTINGS);
   settingsCacheAt = Date.now();
+  dbAdmins = new Set(settingsCache.admins);
   return settingsCache;
 };
 
@@ -92,6 +105,7 @@ const saveSettings = async (value, adminId) => {
   );
   settingsCache = clean;
   settingsCacheAt = Date.now();
+  dbAdmins = new Set(clean.admins);
   return clean;
 };
 
@@ -110,7 +124,27 @@ const adminEmails = () => String(process.env.ADMIN_EMAILS || '')
   .map(e => e.trim().toLowerCase())
   .filter(Boolean);
 
-const isAdmin = (user) => Boolean(user?.email) && adminEmails().includes(String(user.email).toLowerCase());
+const isAdmin = (user) => {
+  const email = String(user?.email || '').toLowerCase();
+  return Boolean(email) && (adminEmails().includes(email) || dbAdmins.has(email));
+};
+
+// Make sure admins saved on the Admin page are loaded (call before isAdmin in middleware)
+const loadAdmins = async () => { await getSettings(); };
+
+// ── Company (your own team) ──────────────────────────────────────────────────
+const companyDomains = () => String(process.env.COMPANY_EMAIL_DOMAINS || '')
+  .split(',')
+  .map(d => d.trim().toLowerCase().replace(/^@/, ''))
+  .filter(Boolean);
+
+const isCompanyEmail = (email) => {
+  const domain = String(email || '').toLowerCase().split('@')[1];
+  return Boolean(domain) && companyDomains().includes(domain);
+};
+
+// Free = admin, company account (switched on in Admin) or company email domain
+const isFreeUser = (user, wallet) => isAdmin(user) || Boolean(wallet?.company) || isCompanyEmail(user?.email);
 
 // ── Ledger ───────────────────────────────────────────────────────────────────
 const log = (entry) => CreditTransaction.create({ id: uuidv4(), createdAt: new Date(), ...entry })
@@ -140,9 +174,10 @@ const getWallet = async (userId) => {
 const formatWallet = (wallet, user) => ({
   balance: Object.fromEntries(KINDS.map(k => [k, wallet?.[k] || 0])),
   used: Object.fromEntries(KINDS.map(k => [k, wallet?.used?.[k] || 0])),
-  plan: wallet?.plan || 'free',
+  plan: isFreeUser(user, wallet) && !isAdmin(user) ? 'company' : (wallet?.plan || 'free'),
   planActivatedAt: wallet?.planActivatedAt || null,
-  unlimited: isAdmin(user),
+  unlimited: isFreeUser(user, wallet),
+  company: Boolean(wallet?.company) || isCompanyEmail(user?.email),
   isAdmin: isAdmin(user),
 });
 
@@ -160,11 +195,27 @@ const outOfCreditsError = (kind) => {
 // user: the logged-in user (req.user) — admins are never charged.
 const charge = async (user, kind, { amount = 1, action = null, model = null } = {}) => {
   if (!KINDS.includes(kind)) throw new Error(`Unknown credit kind "${kind}"`);
-  const noop = { charged: false, refund: async () => {} };
   if (!user?.id) throw outOfCreditsError(kind);
-  if (isAdmin(user)) return noop;
 
-  await getWallet(user.id); // make sure the free credits exist
+  await getSettings(); // loads admins saved on the Admin page (cached for 60 s)
+  const current = await getWallet(user.id); // make sure the free credits exist
+  if (isFreeUser(user, current)) {
+    // Company / admin: no charge, but record the use so you can track it
+    await CreditWallet.updateOne({ userId: user.id }, { $inc: { [`used.${kind}`]: amount }, $set: { updatedAt: new Date() } });
+    log({ userId: user.id, type: 'usage', kind, amount: -amount, balanceAfter: null, action, model, free: true, note: 'Company / admin (free)' });
+    let undone = false;
+    return {
+      charged: false,
+      free: true,
+      refund: async (note = 'AI request failed') => {
+        if (undone) return;
+        undone = true;
+        await CreditWallet.updateOne({ userId: user.id }, { $inc: { [`used.${kind}`]: -amount } });
+        log({ userId: user.id, type: 'refund', kind, amount, balanceAfter: null, action, model, free: true, note });
+      },
+    };
+  }
+
   const wallet = await CreditWallet.findOneAndUpdate(
     { userId: user.id, [kind]: { $gte: amount } },
     { $inc: { [kind]: -amount, [`used.${kind}`]: amount }, $set: { updatedAt: new Date() } },
@@ -193,8 +244,9 @@ const charge = async (user, kind, { amount = 1, action = null, model = null } = 
 
 // Is there at least one credit of any kind? (used before an AI Agent chat turn)
 const hasAnyCredits = async (user) => {
-  if (isAdmin(user)) return true;
+  await getSettings();
   const w = await getWallet(user.id);
+  if (isFreeUser(user, w)) return true;
   return KINDS.some(k => (w[k] || 0) > 0);
 };
 
@@ -234,6 +286,9 @@ module.exports = {
   saveSettings,
   findPack,
   isAdmin,
+  loadAdmins,
+  isCompanyEmail,
+  isFreeUser,
   getWallet,
   formatWallet,
   charge,

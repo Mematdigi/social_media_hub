@@ -13,6 +13,7 @@ const creditTransactionSchema = new mongoose.Schema({
   note:      { type: String, default: '' },
   adminId:   { type: String, default: null },           // who granted
   requestId: { type: String, default: null },           // upgrade request that added it
+  free:      { type: Boolean, default: false },         // 🆕 company / admin use — tracked, not charged
   createdAt: { type: Date, default: Date.now, index: true },
 });
 

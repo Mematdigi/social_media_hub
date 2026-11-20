@@ -48,7 +48,7 @@ router.get('/', authMiddleware, async (req, res) => {
       signupCredits: settings.signupCredits,
       paymentInstructions: settings.paymentInstructions,
       gstPercent: settings.gstPercent,
-      razorpay: razorpay.getPublicConfig(), // { enabled, keyId } — website only
+      razorpay: razorpay.getPublicConfig(req.user), // { enabled, keyId, dummy, dummyOnly } — website only
       requests: requests.map(formatRequest),
     });
   } catch (error) {

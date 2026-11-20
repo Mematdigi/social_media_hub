@@ -15,6 +15,8 @@ const creditWalletSchema = new mongoose.Schema({
     video: { type: Number, default: 0 },
   },
   plan:            { type: String, default: 'free' },   // last plan approved (free | starter | growth | pro)
+  company:         { type: Boolean, default: false },   // 🆕 your own team: unlimited AI, no charge, usage still tracked
+  companyNote:     { type: String, default: '' },
   planActivatedAt: { type: Date, default: null },
   createdAt:       { type: Date, default: Date.now },
   updatedAt:       { type: Date, default: Date.now },

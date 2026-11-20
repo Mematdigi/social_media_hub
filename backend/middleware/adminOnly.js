@@ -2,7 +2,10 @@
 // Use after authMiddleware.
 const { isAdmin } = require('../services/creditService');
 
-module.exports = (req, res, next) => {
+const { loadAdmins } = require('../services/creditService');
+
+module.exports = async (req, res, next) => {
+  try { await loadAdmins(); } catch (_) { /* fall back to ADMIN_EMAILS */ }
   if (!isAdmin(req.user)) {
     return res.status(403).json({ detail: 'Admins only. Add your email to ADMIN_EMAILS in backend/.env and restart.' });
   }

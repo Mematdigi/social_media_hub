@@ -78,12 +78,15 @@ backend/
     aiService.js
     creditService.js
     imageService.js
+    mediaCleanupService.js
     publishService.js
     razorpayService.js
+    trendsService.js
     videoService.js
   utils/
     encryption.js
     logger.js
+  delete-published-media.js
   package.json
   server.js
   twitter-cookies-2003760197366636544.json
@@ -256,6 +259,45 @@ package.json
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path="backend/delete-published-media.js">
+require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
+const mongoose = require('mongoose');
+const Post = require('./models/Post');
+const { getLocalMediaFiles } = require('./services/mediaCleanupService');
+
+const DELETE = process.argv.includes('--delete');
+const UPLOADS = path.resolve(process.env.UPLOADS_DIR || path.join(__dirname, 'uploads'));
+const gb = (b) => (b / 1024 ** 3).toFixed(2) + ' GB';
+
+(async () => {
+  await mongoose.connect(`${process.env.MONGO_URI || 'mongodb://localhost:27017'}/${process.env.DB_NAME || 'SM_Tool'}`);
+  const posts = await Post.find({ mediaDeleted: { $ne: true } }).select('id status mediaUrls youtubeThumbnail').lean();
+  const keep = new Set();
+  posts.filter(p => p.status !== 'published').forEach(p => getLocalMediaFiles(p).forEach(f => keep.add(f)));
+  let files = 0, bytes = 0, cleaned = 0, kept = 0;
+  for (const post of posts.filter(p => p.status === 'published')) {
+    const list = getLocalMediaFiles(post);
+    if (!list.length) continue;
+    let allDone = true;
+    for (const file of list) {
+      if (keep.has(file)) { kept++; allDone = false; continue; }
+      const full = path.join(UPLOADS, file);
+      if (!full.startsWith(UPLOADS + path.sep) || !fs.existsSync(full)) continue;
+      const size = fs.statSync(full).size;
+      if (DELETE) fs.unlinkSync(full);
+      files++; bytes += size;
+      console.log(`${DELETE ? 'Deleted' : 'Would delete'}  ${(size / 1024 ** 2).toFixed(0).padStart(5)} MB  ${file}`);
+    }
+    if (DELETE && allDone) { await Post.updateOne({ id: post.id }, { $set: { mediaDeleted: true, mediaDeletedAt: new Date() } }); cleaned++; }
+  }
+  console.log(`\n${DELETE ? 'DELETED' : 'PREVIEW'}: ${files} file(s), ${gb(bytes)} from published posts.` + (DELETE ? ` ${cleaned} post(s) marked as media deleted.` : ' Nothing was deleted. Run again with --delete.'));
+  if (kept) console.log(`${kept} file(s) kept because a scheduled/draft/failed post also uses them.`);
+  await mongoose.disconnect();
+})().catch(e => { console.error('Error:', e.message); process.exit(1); });
+</file>
 
 <file path="frontend/plugins/health-check/health-endpoints.js">
 // health-endpoints.js
@@ -5250,6 +5292,223 @@ module.exports = {
   addCredits,
   history,
   outOfCreditsError,
+};
+</file>
+
+<file path="backend/services/mediaCleanupService.js">
+// services/mediaCleanupService.js
+// ─────────────────────────────────────────────────────────────────────────────
+// Deletes uploaded media files (videos, images, thumbnails) from the server's
+// /uploads folder after a post has been published for a configurable time.
+//
+// It never touches the live posts on Facebook / Instagram / YouTube / X —
+// only the copy of the file stored on this server.
+//
+// Per-post settings (models/Post.js):
+//   mediaRetentionDays  null → server default, 0 → never, n → n days after publish
+//   mediaDeleteOn       exact date/time override
+//
+// .env settings:
+//   MEDIA_RETENTION_DAYS=3              default days after publishing
+//   MEDIA_CLEANUP_INTERVAL_MINUTES=15   how often the cleanup runs
+//   MEDIA_CLEANUP_DRY_RUN=false         true = only log what would be deleted
+//   UPLOADS_DIR=                        optional, defaults to backend/uploads
+// ─────────────────────────────────────────────────────────────────────────────
+const fs     = require('fs').promises;
+const path   = require('path');
+const Post   = require('../models/Post');
+const logger = require('../utils/logger');
+
+const DAY_MS      = 24 * 60 * 60 * 1000;
+const UPLOADS_DIR = path.resolve(process.env.UPLOADS_DIR || path.join(__dirname, '../uploads'));
+
+const POST_FIELDS =
+  'id status mediaUrls youtubeThumbnail publishedAt scheduledAt mediaRetentionDays mediaDeleteOn mediaDeleted';
+
+// ── Settings ─────────────────────────────────────────────────────────────────
+const getDefaultRetentionDays = () => {
+  const n = Number(process.env.MEDIA_RETENTION_DAYS);
+  return Number.isFinite(n) && n >= 0 ? n : 3;
+};
+
+const isDryRun = () => String(process.env.MEDIA_CLEANUP_DRY_RUN || '').toLowerCase() === 'true';
+
+const getIntervalMinutes = () => {
+  const n = Number(process.env.MEDIA_CLEANUP_INTERVAL_MINUTES);
+  return Number.isFinite(n) && n >= 1 ? n : 15;
+};
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+// Returns the file name inside /uploads for a URL this server hosts,
+// or null for external URLs (Facebook CDN, YouTube thumbnails, etc.)
+const getLocalUploadName = (url) => {
+  if (!url || typeof url !== 'string') return null;
+
+  let pathname = url;
+  try {
+    pathname = new URL(url).pathname;
+  } catch (_) {
+    // relative URL like /uploads/abc.mp4 — use as is
+  }
+
+  const marker = '/uploads/';
+  const idx = pathname.indexOf(marker);
+  if (idx === -1) return null;
+
+  let name = pathname.slice(idx + marker.length);
+  try { name = decodeURIComponent(name); } catch (_) {}
+
+  // Only top-level files (never the chunks/ folder) and no path tricks
+  if (!name || name.includes('/') || name.includes('\\') || name.startsWith('.')) return null;
+  return name;
+};
+
+const getLocalMediaFiles = (post) => {
+  const urls = [...(post?.mediaUrls || [])];
+  if (post?.youtubeThumbnail) urls.push(post.youtubeThumbnail);
+  return [...new Set(urls.map(getLocalUploadName).filter(Boolean))];
+};
+
+const hasLocalMedia = (post) => getLocalMediaFiles(post).length > 0;
+
+// When will this post's uploaded files be removed? null = never / not applicable.
+// Published posts → based on publishedAt. Scheduled posts → projected from scheduledAt.
+const getMediaDeleteAt = (post) => {
+  if (!post || post.mediaDeleted) return null;
+  if (!hasLocalMedia(post)) return null;
+
+  if (post.mediaDeleteOn) return new Date(post.mediaDeleteOn);
+
+  const days =
+    post.mediaRetentionDays === null || post.mediaRetentionDays === undefined
+      ? getDefaultRetentionDays()
+      : Number(post.mediaRetentionDays);
+
+  if (!Number.isFinite(days) || days <= 0) return null; // 0 = keep forever
+
+  let base = null;
+  if (post.status === 'published') base = post.publishedAt;
+  else if (post.status === 'scheduled') base = post.scheduledAt;
+  if (!base) return null;
+
+  return new Date(new Date(base).getTime() + days * DAY_MS);
+};
+
+const isDue = (post, now) => {
+  if (post.status !== 'published') return false; // drafts, scheduled and failed posts keep their media
+  const deleteAt = getMediaDeleteAt(post);
+  return Boolean(deleteAt && deleteAt.getTime() <= now);
+};
+
+// ── Cleanup job ──────────────────────────────────────────────────────────────
+let running = false;
+
+const runMediaCleanup = async () => {
+  if (running) return;
+  running = true;
+
+  const now    = Date.now();
+  const dryRun = isDryRun();
+  let deletedFiles = 0;
+  let cleanedPosts = 0;
+
+  try {
+    // Every post that still references a file in /uploads (any status)
+    const posts = await Post.find({
+      mediaDeleted: { $ne: true },
+      $or: [{ mediaUrls: /\/uploads\// }, { youtubeThumbnail: /\/uploads\// }],
+    })
+      .select(POST_FIELDS)
+      .lean();
+
+    // file name → posts that use it (a file can be shared between posts)
+    const usage = new Map();
+    for (const p of posts) {
+      for (const file of getLocalMediaFiles(p)) {
+        if (!usage.has(file)) usage.set(file, []);
+        usage.get(file).push(p);
+      }
+    }
+
+    for (const post of posts) {
+      if (!isDue(post, now)) continue;
+
+      let allHandled = true;
+
+      for (const file of getLocalMediaFiles(post)) {
+        // Keep the file if another post still needs it (draft, scheduled, failed, or not due yet)
+        const stillNeeded = (usage.get(file) || []).some(other => other.id !== post.id && !isDue(other, now));
+        if (stillNeeded) {
+          allHandled = false;
+          continue;
+        }
+
+        const fullPath = path.join(UPLOADS_DIR, file);
+        if (!fullPath.startsWith(UPLOADS_DIR + path.sep)) continue;
+
+        if (dryRun) {
+          logger.info('🧪', `[media cleanup dry run] would delete ${file} (post ${post.id})`);
+          continue;
+        }
+
+        try {
+          await fs.unlink(fullPath);
+          deletedFiles++;
+          logger.info('🗑️', `Deleted media ${file} (post ${post.id})`);
+        } catch (err) {
+          if (err.code !== 'ENOENT') {
+            allHandled = false;
+            logger.error(`Failed to delete media ${file}`, err);
+          }
+        }
+      }
+
+      if (!dryRun && allHandled) {
+        await Post.updateOne(
+          { id: post.id },
+          { $set: { mediaDeleted: true, mediaDeletedAt: new Date() } }
+        );
+        cleanedPosts++;
+      }
+    }
+
+    if (deletedFiles || cleanedPosts) {
+      logger.success(`Media cleanup: ${deletedFiles} file(s) deleted, ${cleanedPosts} post(s) cleaned`);
+    }
+  } catch (error) {
+    logger.error('Media cleanup failed', error);
+  } finally {
+    running = false;
+  }
+};
+
+let timer = null;
+
+const startMediaCleanup = () => {
+  if (timer) return;
+  const minutes = getIntervalMinutes();
+
+  logger.info(
+    '🧹',
+    `Media cleanup started — default ${getDefaultRetentionDays()} day(s) after publish, ` +
+    `runs every ${minutes} min${isDryRun() ? ' (DRY RUN — nothing will be deleted)' : ''}`
+  );
+
+  setTimeout(runMediaCleanup, 30 * 1000);              // first run shortly after boot
+  timer = setInterval(runMediaCleanup, minutes * 60 * 1000);
+};
+
+module.exports = {
+  startMediaCleanup,
+  runMediaCleanup,
+  getMediaDeleteAt,
+  getLocalMediaFiles,
+  getLocalUploadName,
+  hasLocalMedia,
+  getDefaultRetentionDays,
+  getIntervalMinutes,
+  isDryRun,
 };
 </file>
 
@@ -20296,6 +20555,276 @@ module.exports = {
 };
 </file>
 
+<file path="backend/services/trendsService.js">
+// services/trendsService.js
+// ─────────────────────────────────────────────────────────────────────────────
+// Live trend signals used by the AI assistant.
+//   • Google Trends  — public "trending now" RSS feed, no key needed
+//   • YouTube        — most popular videos (YOUTUBE_API_KEY, or the user's
+//                      connected YouTube account as a fallback)
+//   • Holidays       — Calendarific (optional, CALENDARIFIC_API_KEY)
+// Facebook, Instagram and X do not offer a public trending API, so the AI
+// derives ideas for those platforms from the signals above.
+// ─────────────────────────────────────────────────────────────────────────────
+const axios         = require('axios');
+const { google }    = require('googleapis');
+const SocialAccount = require('../models/SocialAccount');
+const { decrypt }   = require('../utils/encryption');
+const logger        = require('../utils/logger');
+
+// ── Tiny in-memory cache ─────────────────────────────────────────────────────
+const cache = new Map();
+
+const cached = async (key, ttlMs, loader, { refresh = false } = {}) => {
+  const hit = cache.get(key);
+  if (!refresh && hit && hit.expires > Date.now()) return hit.value;
+  const value = await loader();
+  cache.set(key, { value, expires: Date.now() + ttlMs });
+  return value;
+};
+
+const MIN = 60 * 1000;
+
+// ── XML helpers (no extra dependency) ────────────────────────────────────────
+const decodeXml = (s = '') =>
+  s
+    .replace(/^<!\[CDATA\[/, '')
+    .replace(/\]\]>$/, '')
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;|&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .trim();
+
+const readTag = (xml, name) => {
+  const match = xml.match(new RegExp(`<${name}>([\\s\\S]*?)</${name}>`));
+  return match ? decodeXml(match[1].trim()) : '';
+};
+
+const parseGoogleTrendsRss = (xml) =>
+  String(xml || '')
+    .split('<item>')
+    .slice(1)
+    .map(chunk => chunk.split('</item>')[0])
+    .map(item => ({
+      title: readTag(item, 'title'),
+      traffic: readTag(item, 'ht:approx_traffic'),
+      picture: readTag(item, 'ht:picture'),
+      publishedAt: readTag(item, 'pubDate'),
+      news: item
+        .split('<ht:news_item>')
+        .slice(1)
+        .map(n => n.split('</ht:news_item>')[0])
+        .map(n => ({
+          title: readTag(n, 'ht:news_item_title'),
+          url: readTag(n, 'ht:news_item_url'),
+          source: readTag(n, 'ht:news_item_source'),
+        }))
+        .filter(n => n.title)
+        .slice(0, 2),
+    }))
+    .filter(t => t.title)
+    .slice(0, 20);
+
+// ── Google Trends ────────────────────────────────────────────────────────────
+const fetchGoogleTrends = (geo = 'IN', options = {}) =>
+  cached(`gtrends:${geo}`, 30 * MIN, async () => {
+    const res = await axios.get('https://trends.google.com/trending/rss', {
+      params: { geo },
+      responseType: 'text',
+      timeout: 15000,
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SocialHub/1.0)' },
+    });
+    return parseGoogleTrendsRss(res.data);
+  }, options);
+
+// ── YouTube most popular ─────────────────────────────────────────────────────
+const getYouTubeClient = async (userId) => {
+  if (process.env.YOUTUBE_API_KEY) {
+    return google.youtube({ version: 'v3', auth: process.env.YOUTUBE_API_KEY });
+  }
+
+  const account = await SocialAccount.findOne({ userId, platform: 'youtube', isActive: true });
+  if (!account) return null;
+
+  const oauth2Client = new google.auth.OAuth2(process.env.YOUTUBE_CLIENT_ID, process.env.YOUTUBE_CLIENT_SECRET);
+  oauth2Client.setCredentials({
+    access_token: decrypt(account.accessToken),
+    refresh_token: account.refreshToken ? decrypt(account.refreshToken) : undefined,
+  });
+  return google.youtube({ version: 'v3', auth: oauth2Client });
+};
+
+const fetchYouTubeTrending = (regionCode = 'IN', userId, options = {}) =>
+  cached(`yt:${regionCode}:${process.env.YOUTUBE_API_KEY ? 'key' : userId}`, 30 * MIN, async () => {
+    const youtube = await getYouTubeClient(userId);
+    if (!youtube) return [];
+
+    const res = await youtube.videos.list({
+      part: 'snippet,statistics',
+      chart: 'mostPopular',
+      regionCode,
+      maxResults: 12,
+    });
+
+    return (res.data.items || []).map(v => ({
+      id: v.id,
+      title: v.snippet?.title || '',
+      channel: v.snippet?.channelTitle || '',
+      views: Number(v.statistics?.viewCount) || 0,
+      thumbnail: v.snippet?.thumbnails?.medium?.url || v.snippet?.thumbnails?.default?.url || '',
+      url: `https://www.youtube.com/watch?v=${v.id}`,
+      publishedAt: v.snippet?.publishedAt || null,
+    }));
+  }, options);
+
+// ── Holidays (optional, Calendarific) ────────────────────────────────────────
+const fetchHolidays = async (country = 'IN', days = 45) => {
+  if (!process.env.CALENDARIFIC_API_KEY) return [];
+
+  const start = new Date();
+  const end = new Date(start.getTime() + days * 24 * 60 * MIN);
+  const years = [...new Set([start.getUTCFullYear(), end.getUTCFullYear()])];
+  const startStr = start.toISOString().slice(0, 10);
+  const endStr = end.toISOString().slice(0, 10);
+
+  const all = [];
+  for (const year of years) {
+    const list = await cached(`holidays:${country}:${year}`, 24 * 60 * MIN, async () => {
+      const res = await axios.get('https://calendarific.com/api/v2/holidays', {
+        params: { api_key: process.env.CALENDARIFIC_API_KEY, country, year },
+        timeout: 15000,
+      });
+      return (res.data?.response?.holidays || []).map(h => ({
+        name: h.name,
+        date: String(h.date?.iso || '').slice(0, 10),
+        type: Array.isArray(h.type) ? h.type.join(', ') : '',
+      }));
+    });
+    all.push(...list);
+  }
+
+  const seen = new Set();
+  return all
+    .filter(h => h.date >= startStr && h.date <= endStr)
+    .filter(h => {
+      const key = `${h.date}|${h.name}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => a.date.localeCompare(b.date));
+};
+
+// ── Instagram top posts for hashtags (Instagram Graph API) ──────────────────
+// Needs a connected Instagram Business/Creator account. Meta also requires the
+// "Instagram Public Content Access" feature on the app for hashtag search.
+// Meta limit: 30 unique hashtags per account per 7 days, so results are cached
+// for 12 hours and at most 3 hashtags are searched per request.
+const toHashtagName = (value = '') =>
+  String(value).replace(/^#/, '').replace(/[^\p{L}\p{N}_]/gu, '').toLowerCase().slice(0, 60);
+
+const friendlyInstagramError = (message = '') => {
+  if (/permission|public content|\(#10\)|\(#200\)|not authorized|does not have/i.test(message)) {
+    return 'Instagram top posts need the "Instagram Public Content Access" feature approved for your Meta app. Until then, Instagram ideas are AI-suggested.';
+  }
+  if (/limit|too many|\(#4\)|\(#17\)|\(#32\)/i.test(message)) {
+    return 'Instagram hashtag search limit reached (30 hashtags per 7 days). Showing cached results only.';
+  }
+  return `Instagram top posts are unavailable: ${message}`;
+};
+
+const fetchInstagramTopMedia = async (userId, hashtags = [], { refresh = false } = {}) => {
+  const errorKey = `igerr:${userId}`;
+  const knownError = cache.get(errorKey);
+  if (!refresh && knownError && knownError.expires > Date.now()) {
+    return { groups: [], error: knownError.value };
+  }
+
+  const account = await SocialAccount.findOne({ userId, platform: 'instagram', isActive: true });
+  if (!account) {
+    return { groups: [], error: 'Connect an Instagram Business account on the Accounts page to see top Instagram posts.' };
+  }
+
+  const token = decrypt(account.accessToken);
+  const igUserId = account.accountId;
+  const names = [...new Set(hashtags.map(toHashtagName).filter(Boolean))].slice(0, 3);
+
+  const groups = [];
+  let lastError = null;
+
+  for (const name of names) {
+    try {
+      const posts = await cached(`ig:${igUserId}:${name}`, 12 * 60 * MIN, async () => {
+        const search = await axios.get('https://graph.facebook.com/ig_hashtag_search', {
+          params: { user_id: igUserId, q: name, access_token: token },
+          timeout: 15000,
+        });
+        const hashtagId = search.data?.data?.[0]?.id;
+        if (!hashtagId) return [];
+
+        const media = await axios.get(`https://graph.facebook.com/${hashtagId}/top_media`, {
+          params: {
+            user_id: igUserId,
+            fields: 'id,caption,media_type,media_url,permalink,like_count,comments_count',
+            limit: 6,
+            access_token: token,
+          },
+          timeout: 15000,
+        });
+
+        return (media.data?.data || []).map(m => ({
+          id: m.id,
+          caption: (m.caption || '').slice(0, 220),
+          mediaType: m.media_type || '',
+          mediaUrl: m.media_type === 'VIDEO' ? '' : (m.media_url || ''),
+          permalink: m.permalink || '',
+          likes: Number(m.like_count) || 0,
+          comments: Number(m.comments_count) || 0,
+        }));
+      }, { refresh });
+
+      groups.push({ hashtag: `#${name}`, posts });
+    } catch (error) {
+      lastError = error.response?.data?.error?.message || error.message;
+      logger.error(`Instagram hashtag search failed for #${name}`, lastError);
+    }
+  }
+
+  if (!groups.length && lastError) {
+    const friendly = friendlyInstagramError(lastError);
+    cache.set(errorKey, { value: friendly, expires: Date.now() + 60 * MIN });
+    return { groups: [], error: friendly };
+  }
+
+  return { groups, error: lastError ? friendlyInstagramError(lastError) : null };
+};
+
+// Wrap a loader so one failing source never breaks the whole response
+const safely = async (label, fn) => {
+  try {
+    return { data: await fn(), error: null };
+  } catch (error) {
+    const message = error.response?.data?.error?.message || error.message;
+    logger.error(`${label} unavailable`, message);
+    return { data: [], error: message };
+  }
+};
+
+module.exports = {
+  cached,
+  safely,
+  fetchGoogleTrends,
+  fetchYouTubeTrending,
+  fetchHolidays,
+  fetchInstagramTopMedia,
+  toHashtagName,
+  parseGoogleTrendsRss,
+};
+</file>
+
 <file path="frontend/src/assets/scss/_termsCondition.scss">
 // ============================================================
 // _terms.scss — Shared Legal Pages (Terms & Privacy)
@@ -28139,6 +28668,111 @@ export default function EditPost() {
 }
 </file>
 
+<file path="frontend/package.json">
+{
+  "name": "frontend",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@fontsource/dm-sans": "^5.2.8",
+    "@fontsource/outfit": "^5.2.8",
+    "@hookform/resolvers": "^5.0.1",
+    "@radix-ui/react-accordion": "^1.2.8",
+    "@radix-ui/react-alert-dialog": "^1.1.11",
+    "@radix-ui/react-aspect-ratio": "^1.1.4",
+    "@radix-ui/react-avatar": "^1.1.7",
+    "@radix-ui/react-checkbox": "^1.2.3",
+    "@radix-ui/react-collapsible": "^1.1.8",
+    "@radix-ui/react-context-menu": "^2.2.12",
+    "@radix-ui/react-dialog": "^1.1.11",
+    "@radix-ui/react-dropdown-menu": "^2.1.12",
+    "@radix-ui/react-hover-card": "^1.1.11",
+    "@radix-ui/react-label": "^2.1.4",
+    "@radix-ui/react-menubar": "^1.1.12",
+    "@radix-ui/react-navigation-menu": "^1.2.10",
+    "@radix-ui/react-popover": "^1.1.11",
+    "@radix-ui/react-progress": "^1.1.4",
+    "@radix-ui/react-radio-group": "^1.3.4",
+    "@radix-ui/react-scroll-area": "^1.2.6",
+    "@radix-ui/react-select": "^2.2.2",
+    "@radix-ui/react-separator": "^1.1.4",
+    "@radix-ui/react-slider": "^1.3.2",
+    "@radix-ui/react-slot": "^1.2.0",
+    "@radix-ui/react-switch": "^1.2.2",
+    "@radix-ui/react-tabs": "^1.1.9",
+    "@radix-ui/react-toast": "^1.2.11",
+    "@radix-ui/react-toggle": "^1.1.6",
+    "@radix-ui/react-toggle-group": "^1.1.7",
+    "@radix-ui/react-tooltip": "^1.2.4",
+    "axios": "^1.8.4",
+    "baseline-browser-mapping": "^2.11.9",
+    "caniuse-lite": "^1.0.30001806",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "cmdk": "^1.1.1",
+    "cra-template": "1.2.0",
+    "date-fns": "^4.1.0",
+    "embla-carousel-react": "^8.6.0",
+    "framer-motion": "^12.35.0",
+    "input-otp": "^1.4.2",
+    "lucide-react": "^0.507.0",
+    "next-themes": "^0.4.6",
+    "react": "^19.0.0",
+    "react-calendar": "^6.0.0",
+    "react-datepicker": "^9.1.0",
+    "react-day-picker": "^9.14.0",
+    "react-dom": "^19.0.0",
+    "react-hook-form": "^7.56.2",
+    "react-hot-toast": "^2.6.0",
+    "react-icons": "^5.6.0",
+    "react-resizable-panels": "^3.0.1",
+    "react-router-dom": "^7.5.1",
+    "react-scripts": "5.0.1",
+    "recharts": "^3.6.0",
+    "sass": "^1.99.0",
+    "sonner": "^2.0.3",
+    "tailwind-merge": "^3.2.0",
+    "tailwindcss-animate": "^1.0.7",
+    "timeago.js": "^4.0.2",
+    "vaul": "^1.1.2",
+    "zod": "^3.24.4"
+  },
+  "scripts": {
+    "start": "craco start",
+    "build": "craco build",
+    "test": "craco test"
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  },
+  "devDependencies": {
+    "@babel/plugin-proposal-private-property-in-object": "^7.21.11",
+    "@craco/craco": "^7.1.0",
+    "@emergentbase/visual-edits": "https://assets.emergent.sh/npm/emergentbase-visual-edits-1.0.8.tgz",
+    "@eslint/js": "9.23.0",
+    "autoprefixer": "^10.4.20",
+    "eslint": "9.23.0",
+    "eslint-plugin-import": "2.31.0",
+    "eslint-plugin-jsx-a11y": "6.10.2",
+    "eslint-plugin-react": "7.37.4",
+    "eslint-plugin-react-hooks": "5.2.0",
+    "globals": "15.15.0",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17"
+  },
+  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
+}
+</file>
+
 <file path="frontend/src/components/posts/PostCard.jsx">
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -28534,111 +29168,6 @@ function App() {
 }
 
 export default App;
-</file>
-
-<file path="frontend/package.json">
-{
-  "name": "frontend",
-  "version": "0.1.0",
-  "private": true,
-  "dependencies": {
-    "@fontsource/dm-sans": "^5.2.8",
-    "@fontsource/outfit": "^5.2.8",
-    "@hookform/resolvers": "^5.0.1",
-    "@radix-ui/react-accordion": "^1.2.8",
-    "@radix-ui/react-alert-dialog": "^1.1.11",
-    "@radix-ui/react-aspect-ratio": "^1.1.4",
-    "@radix-ui/react-avatar": "^1.1.7",
-    "@radix-ui/react-checkbox": "^1.2.3",
-    "@radix-ui/react-collapsible": "^1.1.8",
-    "@radix-ui/react-context-menu": "^2.2.12",
-    "@radix-ui/react-dialog": "^1.1.11",
-    "@radix-ui/react-dropdown-menu": "^2.1.12",
-    "@radix-ui/react-hover-card": "^1.1.11",
-    "@radix-ui/react-label": "^2.1.4",
-    "@radix-ui/react-menubar": "^1.1.12",
-    "@radix-ui/react-navigation-menu": "^1.2.10",
-    "@radix-ui/react-popover": "^1.1.11",
-    "@radix-ui/react-progress": "^1.1.4",
-    "@radix-ui/react-radio-group": "^1.3.4",
-    "@radix-ui/react-scroll-area": "^1.2.6",
-    "@radix-ui/react-select": "^2.2.2",
-    "@radix-ui/react-separator": "^1.1.4",
-    "@radix-ui/react-slider": "^1.3.2",
-    "@radix-ui/react-slot": "^1.2.0",
-    "@radix-ui/react-switch": "^1.2.2",
-    "@radix-ui/react-tabs": "^1.1.9",
-    "@radix-ui/react-toast": "^1.2.11",
-    "@radix-ui/react-toggle": "^1.1.6",
-    "@radix-ui/react-toggle-group": "^1.1.7",
-    "@radix-ui/react-tooltip": "^1.2.4",
-    "axios": "^1.8.4",
-    "baseline-browser-mapping": "^2.11.9",
-    "caniuse-lite": "^1.0.30001806",
-    "class-variance-authority": "^0.7.1",
-    "clsx": "^2.1.1",
-    "cmdk": "^1.1.1",
-    "cra-template": "1.2.0",
-    "date-fns": "^4.1.0",
-    "embla-carousel-react": "^8.6.0",
-    "framer-motion": "^12.35.0",
-    "input-otp": "^1.4.2",
-    "lucide-react": "^0.507.0",
-    "next-themes": "^0.4.6",
-    "react": "^19.0.0",
-    "react-calendar": "^6.0.0",
-    "react-datepicker": "^9.1.0",
-    "react-day-picker": "^9.14.0",
-    "react-dom": "^19.0.0",
-    "react-hook-form": "^7.56.2",
-    "react-hot-toast": "^2.6.0",
-    "react-icons": "^5.6.0",
-    "react-resizable-panels": "^3.0.1",
-    "react-router-dom": "^7.5.1",
-    "react-scripts": "5.0.1",
-    "recharts": "^3.6.0",
-    "sass": "^1.99.0",
-    "sonner": "^2.0.3",
-    "tailwind-merge": "^3.2.0",
-    "tailwindcss-animate": "^1.0.7",
-    "timeago.js": "^4.0.2",
-    "vaul": "^1.1.2",
-    "zod": "^3.24.4"
-  },
-  "scripts": {
-    "start": "craco start",
-    "build": "craco build",
-    "test": "craco test"
-  },
-  "browserslist": {
-    "production": [
-      ">0.2%",
-      "not dead",
-      "not op_mini all"
-    ],
-    "development": [
-      "last 1 chrome version",
-      "last 1 firefox version",
-      "last 1 safari version"
-    ]
-  },
-  "devDependencies": {
-    "@babel/plugin-proposal-private-property-in-object": "^7.21.11",
-    "@craco/craco": "^7.1.0",
-    "@emergentbase/visual-edits": "https://assets.emergent.sh/npm/emergentbase-visual-edits-1.0.8.tgz",
-    "@eslint/js": "9.23.0",
-    "autoprefixer": "^10.4.20",
-    "eslint": "9.23.0",
-    "eslint-plugin-import": "2.31.0",
-    "eslint-plugin-jsx-a11y": "6.10.2",
-    "eslint-plugin-react": "7.37.4",
-    "eslint-plugin-react-hooks": "5.2.0",
-    "globals": "15.15.0",
-    "postcss": "^8.4.49",
-    "tailwindcss": "^3.4.17"
-  },
-  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
-}
 </file>
 
 <file path="frontend/src/components/accounts/PlatformCard.jsx">
