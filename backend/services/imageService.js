@@ -17,6 +17,7 @@ const fs     = require('fs');
 const path   = require('path');
 const axios  = require('axios');
 const sharp  = require('sharp');
+const aiModels = require('../config/aiModels'); // 🆕 image tier (AI_MODEL_IMAGE)
 
 const UPLOAD_DIR = path.join(__dirname, '../uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -33,8 +34,8 @@ const getProvider = () => {
 };
 
 const getModel = () => {
-  if (process.env.IMAGE_MODEL) return process.env.IMAGE_MODEL;
-  return getProvider() === 'openai' ? 'gpt-image-1' : 'gemini-3.1-flash-image';
+  if (getProvider() === 'openai') return process.env.IMAGE_MODEL || 'gpt-image-1';
+  return aiModels.modelFor('image');
 };
 
 const getStatus = () => {
@@ -81,19 +82,25 @@ const geminiImage = async ({ prompt, aspectRatio, inputImages = [] }) => {
   ];
 
   let res;
-  try {
-    res = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/${getModel()}:generateContent`,
-      { contents: [{ role: 'user', parts }], generationConfig },
-      {
-        headers: { 'x-goog-api-key': process.env.GEMINI_API_KEY, 'Content-Type': 'application/json' },
-        timeout: 240000,
-        maxBodyLength: Infinity,
-        maxContentLength: Infinity,
-      }
-    );
-  } catch (error) {
-    throw apiError(error, 'Image model error');
+  const models = aiModels.modelsFor('image');
+  for (let i = 0; i < models.length; i++) {
+    try {
+      res = await axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/${models[i]}:generateContent`,
+        { contents: [{ role: 'user', parts }], generationConfig },
+        {
+          headers: { 'x-goog-api-key': process.env.GEMINI_API_KEY, 'Content-Type': 'application/json' },
+          timeout: 240000,
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+        }
+      );
+      break;
+    } catch (error) {
+      // Model retired by Google → try the next one in config/aiModels.js
+      if (i < models.length - 1 && aiModels.isModelMissing(error)) continue;
+      throw apiError(error, 'Image model error');
+    }
   }
 
   const candidate = res.data?.candidates?.[0];

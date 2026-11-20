@@ -15,6 +15,10 @@ const inboxRoutes = require('./routes/inbox');
 const analyticsRoutes = require('./routes/analytics');
 const aiRoutes = require('./routes/ai');
 const agentRoutes = require('./routes/agent'); // 🆕 AI Agent
+const creditRoutes = require('./routes/credits'); // 🆕 AI credits & plans
+const adminRoutes = require('./routes/admin');     // 🆕 Admin page
+const paymentRoutes = require('./routes/payments'); // 🆕 Razorpay (website)
+const razorpay = require('./services/razorpayService');
 const { startMediaCleanup } = require('./services/mediaCleanupService');
 const { getStatus: getAIStatus } = require('./services/aiService');
 const { getStatus: getAgentStatus } = require('./services/agentService');
@@ -37,6 +41,8 @@ app.use(cors({
   origin: process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',') : '*',
   credentials: true
 }));
+// 🆕 Razorpay webhook needs the raw body to check its signature, so it comes before express.json()
+app.post('/api/payments/webhook', express.raw({ type: '*/*', limit: '1mb' }), razorpay.handleWebhook);
 app.use(express.json());
 
 // Routes
@@ -48,6 +54,9 @@ app.use('/api/inbox', inboxRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/agent', agentRoutes); // 🆕 AI Agent
+app.use('/api/credits', creditRoutes); // 🆕 AI credits & plans
+app.use('/api/admin', adminRoutes);     // 🆕 Admin page
+app.use('/api/payments', paymentRoutes); // 🆕 Razorpay (website)
 
 // Health check
 app.get('/api/health', (req, res) => {

@@ -25,6 +25,9 @@ const { v4: uuidv4 } = require('uuid');
 const SocialAccount = require('../models/SocialAccount');
 const trends        = require('./trendsService');
 const images        = require('./imageService');
+const videos        = require('./videoService');      // 🆕 AI videos (highest model tier)
+const credits       = require('./creditService');     // 🆕 AI credits
+const aiModels      = require('../config/aiModels');  // 🆕 which model does which job
 const logger        = require('../utils/logger');
 
 const TIMEZONE  = 'Asia/Kolkata';
@@ -42,12 +45,17 @@ const getProvider = () => {
   return '';
 };
 
-// Ignores an AGENT_MODEL that belongs to the other provider (e.g. a claude-* name while on Gemini)
+// Gemini: the "agent" tier from config/aiModels.js (AI_MODEL_AGENT), with automatic fallback
+// if Google retires a model. Claude: AGENT_MODEL (ignored if it is a gemini-* name).
+let geminiModelIndex = 0;
 const getModel = () => {
   const provider = getProvider();
+  if (provider === 'gemini') {
+    const list = aiModels.modelsFor('agent');
+    return list[Math.min(geminiModelIndex, list.length - 1)] || DEFAULT_MODELS.gemini;
+  }
   const custom = String(process.env.AGENT_MODEL || '').trim();
-  const prefix = provider === 'gemini' ? 'gemini' : 'claude';
-  return custom && custom.toLowerCase().startsWith(prefix) ? custom : (DEFAULT_MODELS[provider] || '');
+  return custom && custom.toLowerCase().startsWith('claude') ? custom : (DEFAULT_MODELS[provider] || '');
 };
 
 const getStatus = () => {
@@ -63,6 +71,7 @@ const getStatus = () => {
     model: reason ? null : getModel(),
     reason,
     images: imageStatus,
+    videos: videos.getStatus(), // 🆕
   };
 };
 
@@ -88,6 +97,7 @@ const consume = (key, limit) => {
 };
 const AGENT_LIMIT = () => Number(process.env.AGENT_RATE_LIMIT_PER_HOUR) || 40;
 const IMAGE_LIMIT = () => Number(process.env.IMAGE_RATE_LIMIT_PER_HOUR) || 20;
+const VIDEO_LIMIT = () => Number(process.env.VIDEO_RATE_LIMIT_PER_HOUR) || 5;
 
 const consumeAgentTurn = (userId) => {
   if (!consume(`agent:${userId}`, AGENT_LIMIT())) {
@@ -113,6 +123,8 @@ HOW YOU WORK
    • If the post needs a visual and none was attached, call generate_image. Pass the user's attached photos (e.g. their product or logo) as reference_image_urls when they should appear in the design.
    • After generating, LOOK at the image. If text is misspelled, the product is wrong, or it looks off, regenerate once with a corrected prompt.
    • Videos: you cannot watch videos. If the user attaches one, ask what it shows only if you need that to write the caption.
+   • AI videos: call generate_video ONLY when the user clearly asks for an AI-made video / reel / short. It is slow (1–6 minutes) and uses 1 AI video credit, so confirm the idea in one line first if the request is vague, and never make more than one video per request. Prefer 9:16 for Reels/Shorts/Stories and 16:9 for YouTube/Facebook feed.
+   • Credits: images use AI image credits, videos use AI video credits, and every post card (propose_post) uses 1 AI post credit. If a tool says the user has no credits left, say so in one short line and offer to continue without that item (e.g. text only) — don't retry, and never mention prices, plans, payments, upgrading or websites.
 5. Call list_channels, then call propose_post with the finished post. The user will see a card, choose the channels and Facebook pages, edit anything, and press "Post now" or "Schedule". Pre-select channels in suggested_account_ids / suggested_page_ids ONLY if the user named them; otherwise leave them empty so the user picks.
 6. propose_post is the ONLY way to publish or schedule. Never say a post is published or scheduled until the propose_post result confirms it. After the result, give a short summary (and mention any platform that failed and why).
 
@@ -181,6 +193,19 @@ const TOOLS = [
     },
   },
   {
+    name: 'generate_video',
+    description: 'Create a short AI video (a few seconds, with sound) for Reels, Shorts or a feed post. Slow (1–6 minutes) and uses 1 AI video credit — only when the user asked for an AI video.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'Detailed shot description: subject, action, camera movement, setting, lighting, style, mood, and any sound/voice. On-screen text in double quotes, max ~5 words.' },
+        aspect_ratio: { type: 'string', enum: videos.ASPECT_RATIOS, description: '9:16 for Reels/Shorts/Stories, 16:9 for YouTube/Facebook feed.' },
+        reference_image_url: { type: 'string', description: 'Optional: one image the user uploaded (product / logo) to animate or feature.' },
+      },
+      required: ['prompt', 'aspect_ratio'],
+    },
+  },
+  {
     name: 'propose_post',
     description: 'Show the user a ready-to-publish post as a card. The user picks channels and Facebook pages, can edit, and presses Post now or Schedule (or cancels). This is the only way to publish or schedule. Propose one post at a time and wait for the result.',
     input_schema: {
@@ -206,6 +231,7 @@ const TOOL_LABELS = {
   get_trending_topics: 'Looked up what’s trending',
   generate_image: 'Designed an image',
   enhance_image: 'Enhanced your photo',
+  generate_video: 'Created a video',
 };
 
 // ── Display helpers (what the chat page shows) ───────────────────────────────
@@ -289,7 +315,15 @@ const generateImageTool = async (input, session, ctx) => {
     .filter(f => images.isImageFile(f.filename))
     .map(f => f.filePath);
 
-  const result = await images.generateImage({ prompt, aspectRatio: input.aspect_ratio, referenceFiles });
+  // 🆕 1 AI image credit (given back if the image fails)
+  const credit = await credits.charge(ctx.user, 'image', { action: 'generate_image', model: images.getStatus().model });
+  let result;
+  try {
+    result = await images.generateImage({ prompt, aspectRatio: input.aspect_ratio, referenceFiles });
+  } catch (error) {
+    await credit.refund();
+    throw error;
+  }
   const url = fileUrl(ctx, result.filename);
 
   pushDisplay(session, { type: 'image', url, label: 'Generated image', detail: `${result.aspectRatio} · ${result.model}`, prompt });
@@ -306,7 +340,18 @@ const enhanceImageTool = async (input, session, ctx) => {
     throw fail(`Image limit reached (${IMAGE_LIMIT()} images per hour). Use mode "basic" or try again later.`, 429);
   }
   const { filePath } = images.resolveLocalUpload(input.image_url);
-  const result = await images.enhanceImage({ filePath, mode, instructions: asString(input.instructions).slice(0, 1000) });
+  // 🆕 AI enhancement uses 1 AI image credit; the quick "basic" fix is free
+  const credit = mode === 'basic'
+    ? { refund: async () => {} }
+    : await credits.charge(ctx.user, 'image', { action: 'enhance_image', model: images.getStatus().model });
+  let result;
+  try {
+    result = await images.enhanceImage({ filePath, mode, instructions: asString(input.instructions).slice(0, 1000) });
+  } catch (error) {
+    await credit.refund();
+    throw error;
+  }
+  if (result.mode !== 'ai') await credit.refund('Basic enhancer used (free)');
   const url = fileUrl(ctx, result.filename);
 
   pushDisplay(session, {
@@ -323,6 +368,35 @@ const enhanceImageTool = async (input, session, ctx) => {
   ];
 };
 
+// 🆕 AI video (uses 1 AI video credit)
+const generateVideoTool = async (input, session, ctx) => {
+  const status = videos.getStatus();
+  if (!status.configured) throw fail(status.reason, 503);
+  if (!consume(`video:${ctx.userId}`, VIDEO_LIMIT())) {
+    throw fail(`Video limit reached (${VIDEO_LIMIT()} videos per hour). Try again later.`, 429);
+  }
+  const prompt = asString(input.prompt).slice(0, 4000);
+  if (!prompt) throw fail('prompt is required');
+
+  let referenceFile = null;
+  if (asString(input.reference_image_url)) {
+    const ref = images.resolveLocalUpload(input.reference_image_url);
+    if (images.isImageFile(ref.filename)) referenceFile = ref.filePath;
+  }
+
+  const credit = await credits.charge(ctx.user, 'video', { action: 'generate_video', model: status.model });
+  let result;
+  try {
+    result = await videos.generateVideo({ prompt, aspectRatio: input.aspect_ratio, referenceFile });
+  } catch (error) {
+    await credit.refund();
+    throw error;
+  }
+  const url = fileUrl(ctx, result.filename);
+  pushDisplay(session, { type: 'video', url, label: 'Generated video', detail: `${result.aspectRatio} · ${result.resolution || ''} · ${result.model}`, prompt });
+  return { video_url: url, aspect_ratio: result.aspectRatio, note: 'The user can see and play the video in the chat. Attach video_url in propose_post media_urls to post it.' };
+};
+
 const executeTool = async (toolUse, session, ctx) => {
   try {
     let content;
@@ -330,14 +404,19 @@ const executeTool = async (toolUse, session, ctx) => {
     else if (toolUse.name === 'get_trending_topics') content = await getTrendingTopics(toolUse.input || {});
     else if (toolUse.name === 'generate_image') content = await generateImageTool(toolUse.input || {}, session, ctx);
     else if (toolUse.name === 'enhance_image') content = await enhanceImageTool(toolUse.input || {}, session, ctx);
+    else if (toolUse.name === 'generate_video') content = await generateVideoTool(toolUse.input || {}, session, ctx);
     else throw fail(`Unknown tool ${toolUse.name}`);
 
-    if (TOOL_LABELS[toolUse.name] && !['generate_image', 'enhance_image'].includes(toolUse.name)) {
+    if (TOOL_LABELS[toolUse.name] && !['generate_image', 'enhance_image', 'generate_video'].includes(toolUse.name)) {
       pushDisplay(session, { type: 'activity', text: TOOL_LABELS[toolUse.name] });
     }
     return toolResult(toolUse.id, content);
   } catch (error) {
     logger.error(`Agent tool ${toolUse.name} failed`, error.message);
+    if (error.code === 'NO_CREDITS') {
+      pushDisplay(session, { type: 'credits', kind: error.kind, text: error.message });
+      return toolResult(toolUse.id, `Error: ${error.message} Do not retry. Tell the user in one short line.`, true);
+    }
     pushDisplay(session, { type: 'activity', text: `${TOOL_LABELS[toolUse.name] || toolUse.name} — failed: ${error.message}`, error: true });
     return toolResult(toolUse.id, `Error: ${error.message}`, true);
   }
@@ -363,7 +442,7 @@ const buildApiMessages = async (messages) => Promise.all(messages.map(async (m, 
   return {
     role: m.role,
     content: await Promise.all(m.content.map(b => rehydrateBlock(b, recent))),
-    ...(m._raw ? { _raw: m._raw } : {}),
+    ...(m._raw ? { _raw: m._raw, _model: m._model } : {}),
   };
 }));
 
@@ -459,10 +538,14 @@ const toGeminiContents = (messages) => {
       calls.forEach(b => { names[b.id] = b.name; ids[b.id] = b._geminiId || null; });
       callOrder = calls.map(b => b.id);
 
-      const parts = Array.isArray(m._raw) && m._raw.length
+      // Raw parts carry Gemini "thought signatures" that only the SAME model accepts.
+      // Turns written by another model (e.g. chats from before a model change) are rebuilt instead.
+      const sameModel = (m._model || process.env.AGENT_MODEL || 'gemini-3.5-flash') === getModel();
+      const parts = Array.isArray(m._raw) && m._raw.length && sameModel
         ? m._raw
         : blocks.map(b => (b.type === 'text' && b.text ? { text: b.text }
-          : b.type === 'tool_use' ? { functionCall: { name: b.name, args: b.input || {} } } : null)).filter(Boolean);
+          // Gemini 3 needs a signature on replayed function calls; this documented placeholder skips the check
+          : b.type === 'tool_use' ? { functionCall: { name: b.name, args: b.input || {} }, thoughtSignature: 'skip_thought_signature_validator' } : null)).filter(Boolean);
       if (parts.length) contents.push({ role: 'model', parts });
       continue;
     }
@@ -518,6 +601,12 @@ const callGemini = async (messages, attempt = 1) => {
     if (status === 400 && geminiToolImages && /function_?response|displayName|display_name|\$ref|parts/i.test(message)) {
       logger.info('🤖', 'Gemini rejected images in tool results — retrying without them');
       geminiToolImages = false;
+      return callGemini(messages, attempt);
+    }
+    // Model retired by Google → move to the next model in config/aiModels.js and retry
+    if (aiModels.isModelMissing(error) && geminiModelIndex < aiModels.modelsFor('agent').length - 1) {
+      geminiModelIndex += 1;
+      logger.info('🤖', `Agent model not available — switching to ${getModel()}`);
       return callGemini(messages, attempt);
     }
     if (status === 400 || status === 403) {
@@ -585,7 +674,7 @@ const runLoop = async (session, ctx) => {
   for (let step = 0; step < MAX_STEPS; step++) {
     const response = await callModel(await buildApiMessages(session.messages));
     const content = asArray(response.content);
-    session.messages.push({ role: 'assistant', content, ...(response.raw ? { _raw: response.raw } : {}) });
+    session.messages.push({ role: 'assistant', content, ...(response.raw ? { _raw: response.raw, _model: getModel() } : {}) });
 
     const text = content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
     if (text) pushDisplay(session, { type: 'assistant', text });
@@ -604,6 +693,18 @@ const runLoop = async (session, ctx) => {
         continue;
       }
       results.push(await executeTool(toolUse, session, ctx));
+    }
+
+    if (proposal) {
+      // 🆕 Each AI post card uses 1 AI post credit
+      try {
+        await credits.charge(ctx.user, 'post', { action: 'agent_post', model: getModel() });
+      } catch (error) {
+        if (error.code !== 'NO_CREDITS') throw error;
+        pushDisplay(session, { type: 'credits', kind: 'post', text: error.message });
+        results.push(toolResult(proposal.id, `Error: ${error.message} Do not retry. Tell the user in one short line.`, true));
+        proposal = null;
+      }
     }
 
     if (proposal) {
@@ -636,6 +737,12 @@ const updateProposalDisplay = (session, toolUseId, patch) => {
 // ── Public: send a chat message ──────────────────────────────────────────────
 // attachments: [{ url, kind: 'image' | 'video', name }]
 const sendMessage = async (session, ctx, { message, attachments = [] }) => {
+  // 🆕 The agent needs at least one AI credit (post, image or video)
+  if (!(await credits.hasAnyCredits(ctx.user))) {
+    const err = fail('You have used all your AI credits.', 402);
+    err.code = 'NO_CREDITS';
+    throw err;
+  }
   consumeAgentTurn(ctx.userId);
 
   const text = asString(message).slice(0, 6000);

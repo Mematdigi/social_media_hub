@@ -1003,8 +1003,15 @@ router.post('/upload-chunk', authMiddleware, chunkUpload.single('file'), async (
     
     // 🌟 THE FIX: Safely truncate the original name to a maximum of 100 chars
     // This prevents OS-level "ENAMETOOLONG" errors if a user uploads a file with a massive name
-    const rawName = path.parse(originalName).name;
-    const cleanName = rawName.substring(0, 100);
+    const rawName = path.parse(String(originalName || 'upload')).name;
+    // 🆕 Only safe characters in file names: "My video!?.mp4" broke the /uploads link and the YouTube upload
+    // ("?" and "#" cut the URL, "!" and spaces get encoded differently by browsers and platforms)
+    const cleanName = rawName
+      .normalize('NFKD')
+      .replace(/[^a-zA-Z0-9_-]+/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_|_$/g, '')
+      .substring(0, 80) || 'file';
 
     if (isVideo) {
       // 🌟 The RAM-Safe Video Assembler

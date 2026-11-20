@@ -1,6 +1,6 @@
 // routes/agent.js
 // ─────────────────────────────────────────────────────────────────────────────
-// GET    /api/agent/status          → is the agent (and image model) configured?
+// GET    /api/agent/status          → is the agent (and image / video model) configured?
 // GET    /api/agent/sessions        → recent chats
 // GET    /api/agent/sessions/:id    → one chat
 // DELETE /api/agent/sessions/:id    → delete a chat
@@ -21,6 +21,7 @@ const busy = new Set();
 
 const buildContext = (req) => ({
   userId: req.user.id,
+  user: { id: req.user.id, email: req.user.email }, // 🆕 for AI credits (admins are never charged)
   authHeader: req.headers.authorization,
   baseUrl: (process.env.PUBLIC_BASE_URL || `https://${req.get('host')}`).replace(/\/+$/, ''),
   internalBaseUrl: `http://127.0.0.1:${process.env.PORT || 5000}`,
@@ -46,7 +47,7 @@ const saveSession = async (session) => {
 const sendError = (res, error, fallback) => {
   const status = error.status || 500;
   if (status >= 500) logger.error(fallback, error.message);
-  res.status(status).json({ detail: error.message || fallback });
+  res.status(status).json({ detail: error.message || fallback, ...(error.code === 'NO_CREDITS' ? { code: 'NO_CREDITS' } : {}) });
 };
 
 router.get('/status', authMiddleware, (req, res) => {
@@ -139,35 +140,6 @@ router.post('/confirm', authMiddleware, async (req, res) => {
     sendError(res, error, 'Failed to publish the post');
   } finally {
     busy.delete(session.id);
-  }
-});
-
-// ── Google Play: report AI-generated content ────────────────────────────────
-// POST /api/agent/report  { sessionId, itemId, reason }
-router.post('/report', authMiddleware, async (req, res) => {
-  try {
-    const ContentReport = require('../models/ContentReport');
-    const reason = ['offensive', 'misleading', 'other'].includes(req.body?.reason) ? req.body.reason : 'other';
-    const session = await AgentSession.findOne({ id: String(req.body?.sessionId || ''), userId: req.user.id }).lean();
-    if (!session) return res.status(404).json({ detail: 'Chat not found' });
-    const item = (session.display || []).find(d => d.id === String(req.body?.itemId || ''));
-    if (!item || !['assistant', 'image'].includes(item.type)) {
-      return res.status(400).json({ detail: 'Only AI messages and images can be reported.' });
-    }
-
-    await ContentReport.create({
-      id: uuidv4(),
-      userId: req.user.id,
-      sessionId: session.id,
-      itemId: item.id,
-      itemType: item.type,
-      content: String(item.type === 'image' ? item.url : item.text || '').slice(0, 4000),
-      reason,
-    });
-    logger.info('🚩', `AI content reported (${reason}) by ${req.user.id}`);
-    res.status(201).json({ ok: true });
-  } catch (error) {
-    sendError(res, error, 'Could not send the report');
   }
 });
 

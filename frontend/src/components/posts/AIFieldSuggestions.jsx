@@ -152,6 +152,9 @@ export const AISuggestBar = ({ ai, onSuggest, onImprove, canImprove }) => {
         <div className="flex items-start gap-2 p-3 rounded-xl bg-red-50 border border-red-100 text-xs font-semibold text-red-700">
           <AlertTriangle className="w-4 h-4 flex-shrink-0" />
           <span className="flex-1">{error}</span>
+          {/credits/i.test(error) && (
+            <a href="/credits" className="shrink-0 px-2 py-0.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700">Upgrade</a>
+          )}
           <button type="button" onClick={() => ai.setError('')} className="text-red-400 hover:text-red-700"><X className="w-3.5 h-3.5" /></button>
         </div>
       )}
