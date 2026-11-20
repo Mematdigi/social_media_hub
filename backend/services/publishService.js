@@ -282,7 +282,18 @@ facebook: async ({ pageToken, pageId, content, mediaUrls, mediaType }) => {
     }
 
     const youtubeApi = google.youtube({ version: 'v3', auth: oauth2Client });
-    const tagsArray  = Array.isArray(youtubeTags) ? youtubeTags : [];
+    // 🆕 YouTube rejects the whole upload ("invalid video keywords") if tags contain < > or #,
+    // are empty/duplicated, or add up to more than 500 characters — clean them first
+    const tagsArray = [];
+    let tagChars = 0;
+    for (const raw of (Array.isArray(youtubeTags) ? youtubeTags : String(youtubeTags || '').split(','))) {
+      const tag = String(raw || '').replace(/[<>#,"]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
+      if (!tag || tagsArray.some(t => t.toLowerCase() === tag.toLowerCase())) continue;
+      const cost = tag.length + (tag.includes(' ') ? 2 : 0) + (tagsArray.length ? 1 : 0);
+      if (tagChars + cost > 480) break;
+      tagsArray.push(tag);
+      tagChars += cost;
+    }
 
     // ✨ THE FIX: Safely truncate titles to YouTube's strict 100-character limit
     // 🆕 YouTube rejects "<" and ">" in titles and descriptions

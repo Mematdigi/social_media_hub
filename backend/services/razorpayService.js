@@ -12,6 +12,11 @@
 // The webhook (payment.captured / order.paid) adds the credits too if the customer
 // closed the browser before that last step. Credits are added exactly once.
 // Uses Razorpay's REST API through axios — no extra npm package needed.
+//
+// 🆕 DUMMY (TEST) PAYMENTS — no money moves, credits are added like a real payment:
+//   PAYMENT_MODE=dummy                    everyone sees the test checkout (test server only!)
+//   DUMMY_PAYMENT_EMAILS=a@x.com,b@y.com  only these users (and admins) see "Test payment"
+// Dummy payments are marked gateway "dummy" and never count as revenue in Admin.
 // ─────────────────────────────────────────────────────────────────────────────
 const crypto         = require('crypto');
 const axios          = require('axios');
@@ -116,7 +121,7 @@ const fulfil = async (orderId, { paymentId, method = null, via }) => {
 
   await credits.addCredits(payment.userId, payment.credits, {
     type: payment.packKind === 'topup' ? 'topup' : 'plan',
-    note: `${payment.packName} — paid ₹${(payment.amount / 100).toLocaleString('en-IN')} (Razorpay ${paymentId})`,
+    note: `${payment.packName} — paid ₹${(payment.amount / 100).toLocaleString('en-IN')} (${payment.gateway === 'dummy' ? 'TEST payment' : 'Razorpay'} ${paymentId})`,
     plan: payment.packKind === 'plan' ? payment.packId : null,
   });
   logger.success(`💳 Razorpay: ${payment.userEmail} paid ₹${payment.amount / 100} for ${payment.packName} (${via})`);
@@ -186,6 +191,58 @@ const handleWebhook = async (req, res) => {
   }
 };
 
-const getPublicConfig = () => ({ enabled: isEnabled(), keyId: isEnabled() ? keyId() : null });
+// ── 5. Dummy (test) payments ─────────────────────────────────────────────────
+const dummyForEveryone = () => String(process.env.PAYMENT_MODE || '').toLowerCase().trim() === 'dummy';
+const dummyEmails = () => String(process.env.DUMMY_PAYMENT_EMAILS || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+const canUseDummy = (user) => dummyForEveryone()
+  || credits.isAdmin(user)
+  || dummyEmails().includes(String(user?.email || '').toLowerCase());
 
-module.exports = { isEnabled, getPublicConfig, amountFor, createOrder, verifyCheckout, handleWebhook };
+const createDummyOrder = async (user, packId) => {
+  if (!canUseDummy(user)) throw fail('Test payments are not switched on for your account.', 403);
+  const pack = await credits.findPack(String(packId || ''));
+  if (!pack) throw fail('That plan does not exist any more. Refresh the page.');
+  const { gstPercent = 0 } = await credits.getSettings();
+  const amount = amountFor(pack.price, gstPercent);
+  const orderId = `dummy_order_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+  await Payment.create({
+    id: uuidv4(),
+    userId: user.id,
+    userName: user.name || '',
+    userEmail: user.email || '',
+    packId: pack.id,
+    packName: pack.name,
+    packKind: pack.kind,
+    price: pack.price,
+    gstPercent,
+    amount,
+    credits: pack.credits,
+    gateway: 'dummy',
+    razorpayOrderId: orderId,
+    status: 'created',
+    createdAt: new Date(),
+  });
+  return { orderId, amount, currency: 'INR', packName: pack.name, description: `${pack.name} — TEST payment`, test: true };
+};
+
+// outcome: 'success' adds the credits, 'failed' marks the payment failed
+const completeDummy = async (user, { orderId, outcome = 'success', method = 'upi' } = {}) => {
+  if (!canUseDummy(user)) throw fail('Test payments are not switched on for your account.', 403);
+  const payment = await Payment.findOne({ razorpayOrderId: String(orderId || ''), userId: user.id, gateway: 'dummy' });
+  if (!payment) throw fail('Test payment not found.', 404);
+  if (outcome !== 'success') {
+    await Payment.updateOne({ id: payment.id, status: 'created' }, { $set: { status: 'failed', error: 'Test payment failed (simulated)' } });
+    throw fail('Payment failed (simulated). No money was taken.', 402);
+  }
+  const paymentId = `dummy_pay_${crypto.randomBytes(6).toString('hex')}`;
+  return fulfil(payment.razorpayOrderId, { paymentId, method: `test-${String(method).slice(0, 20)}`, via: 'dummy' });
+};
+
+const getPublicConfig = (user = null) => ({
+  enabled: isEnabled() && !dummyForEveryone(),
+  keyId: isEnabled() ? keyId() : null,
+  dummy: Boolean(user) && canUseDummy(user),
+  dummyOnly: dummyForEveryone(),
+});
+
+module.exports = { isEnabled, getPublicConfig, amountFor, createOrder, verifyCheckout, handleWebhook, createDummyOrder, completeDummy };
