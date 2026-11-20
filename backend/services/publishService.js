@@ -285,7 +285,8 @@ facebook: async ({ pageToken, pageId, content, mediaUrls, mediaType }) => {
     const tagsArray  = Array.isArray(youtubeTags) ? youtubeTags : [];
 
     // ✨ THE FIX: Safely truncate titles to YouTube's strict 100-character limit
-    let safeTitle = (youtubeTitle || 'New Video').trim();
+    // 🆕 YouTube rejects "<" and ">" in titles and descriptions
+    let safeTitle = (youtubeTitle || 'New Video').replace(/[<>]/g, '').trim() || 'New Video';
     if (safeTitle.length > 100) {
       safeTitle = safeTitle.substring(0, 97) + '...';
       logger.info('▶️', 'YouTube title exceeded 100 characters. Automatically truncated to fit API limits.');
@@ -303,7 +304,7 @@ facebook: async ({ pageToken, pageId, content, mediaUrls, mediaType }) => {
             id: platformPostId,
             snippet: {
               title:       safeTitle, // <-- Applied safe title
-              description: content      || '',
+              description: String(content || '').replace(/[<>]/g, '').slice(0, 5000), // 🆕 YouTube rejects < >
               tags:        tagsArray,
               categoryId:  youtubeCategory,
             },
@@ -335,15 +336,24 @@ facebook: async ({ pageToken, pageId, content, mediaUrls, mediaType }) => {
       throw new Error('YouTube requires a valid video format (mp4, mov, webm, avi, mkv).');
     }
 
-    const filename      = videoUrl.split('/').pop();
-    const localFilePath = path.join(__dirname, '../uploads', decodeURIComponent(filename));
+    // 🆕 Find the file even if its name has "!", "?", "#", spaces or %-encoding in it
+    const rawFilename = videoUrl.split('/uploads/').pop().split('/').pop();
+    const safeDecode = (v) => { try { return decodeURIComponent(v); } catch (_) { return v; } };
+    const candidates = [...new Set([
+      safeDecode(rawFilename),
+      rawFilename,
+      safeDecode(rawFilename.split(/[?#]/)[0]),
+      safeDecode(rawFilename.replace(/\+/g, ' ')),
+    ])].map(name => path.basename(name)).filter(Boolean);
+    const filename = candidates.find(name => fs.existsSync(path.join(__dirname, '../uploads', name))) || candidates[0];
+    const localFilePath = path.join(__dirname, '../uploads', filename);
 
     if (!fs.existsSync(localFilePath)) {
-      throw new Error(`Video file not found on server: ${decodeURIComponent(filename)}`);
+      throw new Error(`Video file not found on server: ${filename}`);
     }
 
     const fileSize = fs.statSync(localFilePath).size;
-    logger.info('▶️', `Starting fresh YouTube upload — file: ${decodeURIComponent(filename)} (${fileSize} bytes)`);
+    logger.info('▶️', `Starting fresh YouTube upload — file: ${filename} (${fileSize} bytes)`);
 
     try {
       const uploadRes = await youtubeApi.videos.insert({
@@ -351,7 +361,7 @@ facebook: async ({ pageToken, pageId, content, mediaUrls, mediaType }) => {
         requestBody: {
           snippet: {
             title:       safeTitle, // <-- Applied safe title
-            description: content      || '',
+            description: String(content || '').replace(/[<>]/g, '').slice(0, 5000), // 🆕 YouTube rejects < >
             tags:        tagsArray,
             categoryId:  youtubeCategory,
           },

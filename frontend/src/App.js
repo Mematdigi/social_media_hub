@@ -17,9 +17,10 @@ import Scheduler from './pages/Scheduler';
 import Inbox from './pages/Inbox';
 import Analytics from './pages/Analytics';
 import AIAgent from './pages/AIAgent'; // 🆕 AI Agent
+import Credits from './pages/Credits'; // 🆕 AI credits & plans
+import Admin from './pages/Admin';     // 🆕 Admin (ADMIN_EMAILS only)
 import PrivacyPolicy from './pages/PrivacyPolicy';
 import TermsAndConditions from './pages/TermsCondition';
-import DeleteAccount from './pages/DeleteAccount'; // Google Play: account deletion page
 // import Home from './pages/Home';
 
 // Protected Route Component
@@ -68,7 +69,6 @@ function AppRoutes() {
       <Route path="/register" element={<PublicRoute><Register /></PublicRoute>} />
       <Route path="/privacy-policy" element={<PublicRoute><PrivacyPolicy/></PublicRoute>} />
       <Route path="/terms-condition" element={<PublicRoute><TermsAndConditions/></PublicRoute>} />
-      <Route path="/delete-account" element={<DeleteAccount />} />
       {/* <Route path="/" element={<PublicRoute><Home/></PublicRoute>}/> */}
 
       {/* Protected Routes */}
@@ -81,6 +81,8 @@ function AppRoutes() {
       <Route path="/inbox" element={<ProtectedRoute><Inbox /></ProtectedRoute>} />
       <Route path="/analytics" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
       <Route path="/agent" element={<ProtectedRoute><AIAgent /></ProtectedRoute>} />
+      <Route path="/credits" element={<ProtectedRoute><Credits /></ProtectedRoute>} />
+      <Route path="/admin" element={<ProtectedRoute><Admin /></ProtectedRoute>} />
 
       {/* Redirects */}
       <Route path="/" element={<Navigate to="/dashboard" replace />} />

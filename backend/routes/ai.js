@@ -12,6 +12,7 @@ const authMiddleware = require('../middleware/auth');
 const logger         = require('../utils/logger');
 const ai             = require('../services/aiService');
 const trends         = require('../services/trendsService');
+const credits        = require('../services/creditService'); // 🆕 1 AI post credit per "Write with AI"
 
 const router = express.Router();
 
@@ -88,7 +89,18 @@ router.post('/suggest', authMiddleware, async (req, res) => {
     }
     if (!consumeAiCredit(req.user.id)) return rateLimited(res);
 
-    const suggestions = await ai.generatePostSuggestions({
+    // 🆕 Uses 1 AI post credit (given back if the AI call fails)
+    let credit;
+    try {
+      credit = await credits.charge(req.user, 'post', { action: 'write_with_ai', model: ai.getStatus().model });
+    } catch (error) {
+      if (error.code !== 'NO_CREDITS') throw error;
+      return res.status(402).json({ detail: error.message, code: error.code, kind: 'post' });
+    }
+
+    let suggestions;
+    try {
+      suggestions = await ai.generatePostSuggestions({
       topic:     String(topic).slice(0, 1500),
       title:     String(title).slice(0, 300),
       content:   String(content).slice(0, 5000),
@@ -99,7 +111,11 @@ router.post('/suggest', authMiddleware, async (req, res) => {
       region:    ai.normalizeRegion(region),
       mode:      mode === 'improve' ? 'improve' : 'generate',
       mediaKind: ['video', 'image', 'none'].includes(mediaKind) ? mediaKind : 'none',
-    });
+      });
+    } catch (error) {
+      await credit.refund();
+      throw error;
+    }
 
     res.json(suggestions);
   } catch (error) {

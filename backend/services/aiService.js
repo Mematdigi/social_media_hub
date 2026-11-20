@@ -4,7 +4,8 @@
 // trend-based content ideas and festival / event ideas.
 //
 // Providers (pick one in .env):
-//   AI_PROVIDER=gemini      GEMINI_API_KEY=...      AI_MODEL=gemini-3.5-flash-lite   (free tier available)
+//   AI_PROVIDER=gemini      GEMINI_API_KEY=...      model: config/aiModels.js "light" tier
+//                                                   (AI_MODEL_LIGHT=gemini-3.1-flash-lite — cheapest, free tier)
 //   AI_PROVIDER=anthropic   ANTHROPIC_API_KEY=...   AI_MODEL=claude-sonnet-5-5
 //   AI_PROVIDER=openai      OPENAI_API_KEY=...      AI_MODEL=<model name>
 //     (works with any OpenAI-compatible API — set AI_BASE_URL, e.g. Groq:
@@ -13,6 +14,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 const axios  = require('axios');
 const logger = require('../utils/logger');
+const aiModels = require('../config/aiModels'); // 🆕 cheap model for light tasks
 
 const REGION_NAMES = {
   IN: 'India',
@@ -74,7 +76,9 @@ const KEY_NAMES = {
   openai: 'OPENAI_API_KEY',
 };
 
-const getModel = () => process.env.AI_MODEL || DEFAULT_MODELS[getProvider()] || '';
+const getModel = () => (getProvider() === 'gemini'
+  ? aiModels.modelFor('light')
+  : process.env.AI_MODEL || DEFAULT_MODELS[getProvider()] || '');
 
 // Explains exactly what is missing, so the UI and the startup log can show it
 const getStatus = () => {
@@ -92,8 +96,23 @@ const getStatus = () => {
 };
 
 // Google Gemini (native REST API — works with both "AIza…" and "AQ.…" keys from AI Studio)
-const callGemini = async ({ system, prompt, maxTokens }) => {
-  const model = process.env.AI_MODEL || 'gemini-3.5-flash-lite';
+// Light tasks use the cheapest model; if Google retired it, the next one in config/aiModels.js is tried
+const callGemini = async (args) => {
+  const models = aiModels.modelsFor('light');
+  let lastError;
+  for (const model of models) {
+    try {
+      return await callGeminiModel(model, args);
+    } catch (error) {
+      lastError = error;
+      if (!aiModels.isModelMissing(error)) throw error;
+      logger.info('🤖', `Gemini model ${model} is not available — trying the next one`);
+    }
+  }
+  throw lastError;
+};
+
+const callGeminiModel = async (model, { system, prompt, maxTokens }) => {
   const res = await axios.post(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
     {

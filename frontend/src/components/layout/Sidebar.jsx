@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { LayoutDashboard, Link2, FileText, Calendar, Inbox, BarChart3, ChevronLeft, ChevronRight, LogOut, Sparkles, Bot } from 'lucide-react';
+import { LayoutDashboard, Link2, FileText, Calendar, Inbox, BarChart3, ChevronLeft, ChevronRight, LogOut, Sparkles, Bot, Crown, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useAccounts } from '../../context/AccountsContext';
-import { inboxAPI } from '../../services/api';
+import { inboxAPI, creditsAPI } from '../../services/api';
 import { getPlatformConfig } from '../../utils/platformConfig';
 import { cn } from '../../lib/utils';
 
@@ -16,11 +16,14 @@ const navItems = [
   { path: '/scheduler', icon: Calendar, label: 'Scheduler' },
   { path: '/inbox', icon: Inbox, label: 'Inbox', showBadge: true },
   { path: '/analytics', icon: BarChart3, label: 'Analytics' },
+  { path: '/credits', icon: Crown, label: 'Credits & plans' }, // 🆕
 ];
+const adminItem = { path: '/admin', icon: ShieldCheck, label: 'Admin' }; // 🆕 only for ADMIN_EMAILS
 
 export const Sidebar = () => {
   const [collapsed, setCollapsed] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [credits, setCredits] = useState(null); // 🆕
   const { user, logout, isAuthenticated } = useAuth();
   const { accounts } = useAccounts();
   const navigate = useNavigate();
@@ -34,6 +37,23 @@ export const Sidebar = () => {
       console.error('Failed to fetch unread count');
     }
   }, [isAuthenticated]);
+
+  // 🆕 AI credits left (and whether this user is an admin)
+  const fetchCredits = useCallback(async () => {
+    if (!isAuthenticated) return;
+    try {
+      const response = await creditsAPI.get();
+      setCredits(response.data);
+    } catch (error) {
+      // credits are optional in the sidebar
+    }
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    fetchCredits();
+    const interval = setInterval(fetchCredits, 120000);
+    return () => clearInterval(interval);
+  }, [fetchCredits]);
 
   useEffect(() => {
     fetchUnreadCount();
@@ -89,7 +109,7 @@ export const Sidebar = () => {
 
       {/* Navigation */}
       <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
-        {navItems.map((item) => (
+        {[...navItems, ...(credits?.isAdmin ? [adminItem] : [])].map((item) => (
           <NavLink
             key={item.path}
             to={item.path}
@@ -141,6 +161,23 @@ export const Sidebar = () => {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* 🆕 AI credits left + Upgrade */}
+      {!collapsed && credits && !credits.unlimited && (
+        <div className="mx-3 mb-2 rounded-xl bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50 border border-indigo-100 p-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-indigo-500">AI credits left</p>
+          <p className="mt-1 text-xs text-slate-700">
+            <b>{credits.balance.post}</b> posts · <b>{credits.balance.image}</b> images · <b>{credits.balance.video}</b> videos
+          </p>
+          <button
+            type="button"
+            onClick={() => navigate('/credits')}
+            className="mt-2 w-full rounded-lg bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 py-1.5 text-xs font-semibold text-white hover:opacity-95"
+          >
+            Upgrade
+          </button>
         </div>
       )}
 

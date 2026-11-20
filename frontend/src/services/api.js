@@ -156,7 +156,7 @@ initiateOAuth: async (platform) => {
   window.location.href = `${API_URL}/api/accounts/oauth/${platform}?user_id=${userId}`;
 },
 };
-// Posts API
+
 // Posts API
 export const postsAPI = {
   // Passes frontend filters (status, platform, limits, search) seamlessly to the backend
@@ -211,6 +211,35 @@ export const agentAPI = {
   deleteSession: (id)   => api.delete(`/agent/sessions/${id}`),
   chat:          (data) => api.post('/agent/chat', data, { timeout: 600000 }),      // 10 min (image generation)
   confirm:       (data) => api.post('/agent/confirm', data, { timeout: 1500000 }),  // 25 min (video uploads)
+};
+
+// 🆕 AI credits & plans (customer side)
+export const creditsAPI = {
+  get:           ()             => api.get('/credits'),
+  history:       ()             => api.get('/credits/history'),
+  request:       (planId, note) => api.post('/credits/request', { planId, note, source: 'web' }),
+  cancelRequest: (id)           => api.post(`/credits/request/${id}/cancel`),
+};
+
+// 🆕 Razorpay (website only)
+export const paymentsAPI = {
+  createOrder: (planId) => api.post('/payments/order', { planId }),
+  verify:      (data)   => api.post('/payments/verify', data),
+  list:        ()       => api.get('/payments'),
+};
+
+// 🆕 Admin page (only ADMIN_EMAILS)
+export const adminAPI = {
+  overview:       ()               => api.get('/admin/overview'),
+  users:          (search = '')    => api.get('/admin/users', { params: { search } }),
+  addCredits:     (userId, data)   => api.post(`/admin/users/${userId}/credits`, data),
+  userHistory:    (userId)         => api.get(`/admin/users/${userId}/history`),
+  requests:       (status = 'pending') => api.get('/admin/requests', { params: { status } }),
+  approve:        (id, note = '')  => api.post(`/admin/requests/${id}/approve`, { note }),
+  reject:         (id, note = '')  => api.post(`/admin/requests/${id}/reject`, { note }),
+  payments:       (status = 'all') => api.get('/admin/payments', { params: { status } }),
+  settings:       ()               => api.get('/admin/settings'),
+  saveSettings:   (data)           => api.put('/admin/settings', data),
 };
 
 // Scheduler API
