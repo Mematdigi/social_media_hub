@@ -36,7 +36,6 @@ export const authAPI = {
   getMe: () => api.get('/auth/me'),
 };
 
-// Accounts API
 // Accounts API — only update this section
 export const accountsAPI = {
   getAll:       ()          => api.get('/accounts'),
