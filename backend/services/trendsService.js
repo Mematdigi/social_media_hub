@@ -17,11 +17,23 @@ const logger        = require('../utils/logger');
 // ── Tiny in-memory cache ─────────────────────────────────────────────────────
 const cache = new Map();
 
+// 🆕 Trends / festival ideas / hashtag results are shared through Redis when REDIS_URL is set
+// (survive restarts — fewer AI and API calls). Falls back to this memory cache.
+const sharedCache = require('./cacheService');
+
 const cached = async (key, ttlMs, loader, { refresh = false } = {}) => {
   const hit = cache.get(key);
   if (!refresh && hit && hit.expires > Date.now()) return hit.value;
+  if (!refresh) {
+    const shared = await sharedCache.get(`trends:${key}`);
+    if (shared !== undefined) {
+      cache.set(key, { value: shared, expires: Date.now() + Math.min(ttlMs, 10 * 60 * 1000) });
+      return shared;
+    }
+  }
   const value = await loader();
   cache.set(key, { value, expires: Date.now() + ttlMs });
+  if (value !== undefined) await sharedCache.set(`trends:${key}`, value, Math.round(ttlMs / 1000));
   return value;
 };
 

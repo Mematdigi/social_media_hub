@@ -10,6 +10,10 @@ const logger = require('../utils/logger');
 const { publishPostToPlatforms } = require('../services/publishService');
 const { encrypt, decrypt } = require('../utils/encryption');
 const axios = require('axios');
+const cache = require('../services/cacheService'); // 🆕 Redis/memory cache for live platform reads
+// 🆕 Cached YouTube list calls (search.list alone costs 100 quota units)
+const ytList = (youtube, accountId, resource, args) =>
+  cache.wrap(`yt:${accountId}:${resource}:${cache.hash(args)}`, cache.feedTtl(), async () => ({ data: (await youtube[resource].list(args)).data }));
 const {
   getMediaDeleteAt,
   hasLocalMedia,
@@ -339,7 +343,7 @@ router.get('/', authMiddleware, async (req, res) => {
         for (const page of account.pages || []) {
           if (!page.pageAccessToken) continue;
           try {
-            const fbRes = await axios.get(`https://graph.facebook.com/v19.0/${page.pageId}/feed`, {
+            const fbRes = await cache.cachedGet(`https://graph.facebook.com/v19.0/${page.pageId}/feed`, {
               params: { fields: 'id,message,story,created_time,full_picture,permalink_url,likes.summary(true),comments.summary(true)', limit: 10, access_token: decrypt(page.pageAccessToken) }
             });
             for (const fbPost of fbRes.data?.data || []) {
@@ -354,7 +358,7 @@ router.get('/', authMiddleware, async (req, res) => {
         const page = (account.pages || [])[0];
         if (!page?.pageAccessToken) continue;
         try {
-          const igRes = await axios.get(`https://graph.facebook.com/v19.0/${account.accountId}/media`, {
+          const igRes = await cache.cachedGet(`https://graph.facebook.com/v19.0/${account.accountId}/media`, {
             params: { fields: 'id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count', limit: 10, access_token: decrypt(page.pageAccessToken) }
           });
           for (const igPost of igRes.data?.data || []) {
@@ -372,15 +376,15 @@ router.get('/', authMiddleware, async (req, res) => {
             oauth2Client.setCredentials({ access_token: decrypt(account.accessToken), refresh_token: account.refreshToken ? decrypt(account.refreshToken) : undefined });
             const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
             
-            const channelRes = await youtube.channels.list({ part: 'contentDetails', mine: true });
+            const channelRes = await ytList(youtube, account.id, 'channels', { part: 'contentDetails', mine: true });
             const uploadsPlaylistId = channelRes.data.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
 
             if (uploadsPlaylistId) {
-              const playlistRes = await youtube.playlistItems.list({ part: 'snippet', playlistId: uploadsPlaylistId, maxResults: 10 });
+              const playlistRes = await ytList(youtube, account.id, 'playlistItems', { part: 'snippet', playlistId: uploadsPlaylistId, maxResults: 10 });
               const videoIds = playlistRes.data.items.map(item => item.snippet.resourceId.videoId).filter(Boolean);
 
               if (videoIds.length > 0) {
-                const videoRes = await youtube.videos.list({ part: 'snippet,statistics', id: videoIds.join(',') });
+                const videoRes = await ytList(youtube, account.id, 'videos', { part: 'snippet,statistics', id: videoIds.join(',') });
                 for (const ytPost of videoRes.data.items || []) {
                   ytPostMetaMap[ytPost.id] = { accountId: account.id, youtubeTitle: ytPost.snippet.title, content: ytPost.snippet.description || '', mediaUrls: ytPost.snippet.thumbnails?.high?.url ? [ytPost.snippet.thumbnails.high.url] : [], mediaType: 'VIDEO', createdTime: ytPost.snippet.publishedAt, permalinkUrl: `https://www.youtube.com/watch?v=${ytPost.id}`, likes: Number(ytPost.statistics?.likeCount) || 0, comments: Number(ytPost.statistics?.commentCount) || 0, views: Number(ytPost.statistics?.viewCount) || 0 };
                 }

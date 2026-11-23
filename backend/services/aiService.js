@@ -521,4 +521,5 @@ module.exports = {
   generateTrendIdeas,
   generateEventIdeas,
   extractJson,
+  askJson, // 🆕 used by thumbnailService (light model)
 };

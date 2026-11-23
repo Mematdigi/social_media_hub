@@ -13,6 +13,8 @@ const logger         = require('../utils/logger');
 const ai             = require('../services/aiService');
 const trends         = require('../services/trendsService');
 const credits        = require('../services/creditService'); // 🆕 1 AI post credit per "Write with AI"
+const thumbnails     = require('../services/thumbnailService'); // 🆕 YouTube thumbnails with AI
+const images         = require('../services/imageService');
 
 const router = express.Router();
 
@@ -284,6 +286,61 @@ router.get('/events', authMiddleware, async (req, res) => {
     });
   } catch (error) {
     sendError(res, error, 'Failed to load events');
+  }
+});
+
+// ── 🆕 YouTube thumbnail with AI ─────────────────────────────────────────────
+// POST /api/ai/thumbnail/ideas     { title, description, tags } → 3 ideas (free, cached 24 h)
+// POST /api/ai/thumbnail/generate  { title, description, idea, referenceUrl? } → { url }
+//                                  paid plans only (or company / admin), 1 AI image credit
+const publicBase = (req) => (process.env.PUBLIC_BASE_URL || `https://${req.get('host')}`).replace(/\/+$/, '');
+
+router.post('/thumbnail/ideas', authMiddleware, async (req, res) => {
+  try {
+    if (!consumeAiCredit(req.user.id)) return rateLimited(res);
+    const { title = '', description = '', tags = [] } = req.body || {};
+    const ideas = await thumbnails.suggestIdeas({ title, description, tags });
+    const paid = await credits.isPaidUser(req.user);
+    res.json({ ideas, canGenerate: paid });
+  } catch (error) {
+    logger.error('Thumbnail ideas failed', error.message);
+    res.status(error.status || 500).json({ detail: error.message || 'Could not suggest thumbnails' });
+  }
+});
+
+router.post('/thumbnail/generate', authMiddleware, async (req, res) => {
+  try {
+    if (!(await credits.isPaidUser(req.user))) {
+      return res.status(403).json({ detail: 'AI thumbnails are part of the paid plans. Upgrade on the Credits page, or upload your own image.', code: 'PAID_ONLY' });
+    }
+    if (!consumeAiCredit(req.user.id)) return rateLimited(res);
+    const { title = '', description = '', idea = {}, referenceUrl = '' } = req.body || {};
+
+    let referenceFile = null;
+    if (referenceUrl) {
+      const ref = images.resolveLocalUpload(referenceUrl);
+      if (images.isImageFile(ref.filename)) referenceFile = ref.filePath;
+    }
+
+    let credit;
+    try {
+      credit = await credits.charge(req.user, 'image', { action: 'youtube_thumbnail', model: images.getStatus().model });
+    } catch (error) {
+      if (error.code !== 'NO_CREDITS') throw error;
+      return res.status(402).json({ detail: error.message, code: error.code, kind: 'image' });
+    }
+
+    let result;
+    try {
+      result = await thumbnails.generateThumbnail({ title, description, idea, referenceFile });
+    } catch (error) {
+      await credit.refund();
+      throw error;
+    }
+    res.json({ url: `${publicBase(req)}/uploads/${result.filename}`, model: result.model });
+  } catch (error) {
+    logger.error('Thumbnail generation failed', error.message);
+    res.status(error.status || 500).json({ detail: error.message || 'Could not create the thumbnail' });
   }
 });
 

@@ -200,6 +200,9 @@ export const aiAPI = {
   sources:  (params) => api.get('/ai/trends/sources', { params, timeout: 60000 }),
   // Top Instagram posts for trending hashtags
   instagramTrends: (params) => api.get('/ai/trends/instagram', { params, timeout: 60000 }),
+  // 🆕 YouTube thumbnails: ideas are free; generating one is for paid plans (1 AI image credit)
+  thumbnailIdeas:    (data) => api.post('/ai/thumbnail/ideas', data, { timeout: 120000 }),
+  thumbnailGenerate: (data) => api.post('/ai/thumbnail/generate', data, { timeout: 300000 }),
 };
 
 // 🆕 AI Agent API (Claude) — chat, generate/enhance images, post & schedule
@@ -225,13 +228,21 @@ export const paymentsAPI = {
   createOrder: (planId) => api.post('/payments/order', { planId }),
   verify:      (data)   => api.post('/payments/verify', data),
   list:        ()       => api.get('/payments'),
+  dummyOrder:    (planId) => api.post('/payments/dummy/order', { planId }),          // 🆕 test payment
+  dummyComplete: (data)   => api.post('/payments/dummy/complete', data),
 };
 
 // 🆕 Admin page (only ADMIN_EMAILS)
 export const adminAPI = {
   overview:       ()               => api.get('/admin/overview'),
+  usage:          (days = 30)      => api.get('/admin/usage', { params: { days } }),
   users:          (search = '')    => api.get('/admin/users', { params: { search } }),
   addCredits:     (userId, data)   => api.post(`/admin/users/${userId}/credits`, data),
+  setCompany:     (userId, company, note = '') => api.post(`/admin/users/${userId}/company`, { company, note }), // 🆕
+  creators:       ()               => api.get('/admin/creators'),      // 🆕 company creator accounts
+  createCreator:  (data)           => api.post('/admin/creators', data),
+  admins:         ()               => api.get('/admin/admins'),        // 🆕
+  saveAdmins:     (admins)         => api.put('/admin/admins', { admins }),
   userHistory:    (userId)         => api.get(`/admin/users/${userId}/history`),
   requests:       (status = 'pending') => api.get('/admin/requests', { params: { status } }),
   approve:        (id, note = '')  => api.post(`/admin/requests/${id}/approve`, { note }),

@@ -11,6 +11,10 @@ const logger = require('../utils/logger');
 const { publishPostToPlatforms } = require('../services/publishService');
 const { encrypt, decrypt } = require('../utils/encryption');
 const axios = require('axios');
+const cache = require('../services/cacheService'); // 🆕 Redis/memory cache for live platform reads
+// 🆕 Cached YouTube list calls (search.list alone costs 100 quota units)
+const ytList = (youtube, accountId, resource, args) =>
+  cache.wrap(`yt:${accountId}:${resource}:${cache.hash(args)}`, cache.feedTtl(), async () => ({ data: (await youtube[resource].list(args)).data }));
 const sharp = require('sharp');
 
 const router = express.Router();
@@ -290,7 +294,7 @@ router.get('/', authMiddleware, async (req, res) => {
           if (!page.pageAccessToken) continue;
           try {
             const pageToken = decrypt(page.pageAccessToken);
-            const fbRes = await axios.get(`https://graph.facebook.com/v19.0/${page.pageId}/feed`, { params: { fields: 'id,message,story,created_time,full_picture,permalink_url', limit: 5, access_token: pageToken } });
+            const fbRes = await cache.cachedGet(`https://graph.facebook.com/v19.0/${page.pageId}/feed`, { params: { fields: 'id,message,story,created_time,full_picture,permalink_url', limit: 5, access_token: pageToken } });
             for (const fbPost of fbRes.data?.data || []) { fbPostMetaMap[fbPost.id] = { accountId: account.id, accountName: account.accountName, pageId: page.pageId, pageName: page.pageName, content: fbPost.message || fbPost.story || '', mediaUrls: fbPost.full_picture ? [fbPost.full_picture] : [], createdTime: fbPost.created_time, permalinkUrl: fbPost.permalink_url || null }; }
           } catch (err) {}
         }
@@ -302,7 +306,7 @@ router.get('/', authMiddleware, async (req, res) => {
         if (!page?.pageAccessToken) continue;
         try {
           const pageToken = decrypt(page.pageAccessToken);
-          const igRes = await axios.get(`https://graph.facebook.com/v19.0/${account.accountId}/media`, { params: { fields: 'id,caption,media_type,media_url,thumbnail_url,permalink,timestamp', limit: 5, access_token: pageToken } });
+          const igRes = await cache.cachedGet(`https://graph.facebook.com/v19.0/${account.accountId}/media`, { params: { fields: 'id,caption,media_type,media_url,thumbnail_url,permalink,timestamp', limit: 5, access_token: pageToken } });
           for (const igPost of igRes.data?.data || []) { igPostMetaMap[igPost.id] = { accountId: account.id, accountName: account.accountName, igUsername: account.igUsername || '', pageId: page.pageId, pageName: page.pageName, content: igPost.caption || '', mediaType: igPost.media_type || 'IMAGE', mediaUrls: igPost.media_url ? [igPost.media_url] : [], thumbnailUrl: igPost.thumbnail_url || null, createdTime: igPost.timestamp, permalinkUrl: igPost.permalink || null }; }
         } catch (err) {}
       }
@@ -315,10 +319,10 @@ router.get('/', authMiddleware, async (req, res) => {
             const oauth2Client = new google.auth.OAuth2(process.env.YOUTUBE_CLIENT_ID, process.env.YOUTUBE_CLIENT_SECRET);
             oauth2Client.setCredentials({ access_token: decrypt(account.accessToken), refresh_token: account.refreshToken ? decrypt(account.refreshToken) : undefined });
             const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
-            const searchRes = await youtube.search.list({ part: 'snippet', forMine: true, type: 'video', order: 'date' });
+            const searchRes = await ytList(youtube, account.id, 'search', { part: 'snippet', forMine: true, type: 'video', order: 'date' });
             const videoIds = searchRes.data.items.map(item => item.id.videoId).filter(Boolean);
             if (videoIds.length > 0) {
-              const videoRes = await youtube.videos.list({ part: 'snippet', id: videoIds.join(',') });
+              const videoRes = await ytList(youtube, account.id, 'videos', { part: 'snippet', id: videoIds.join(',') });
               for (const ytPost of videoRes.data.items || []) { ytPostMetaMap[ytPost.id] = { accountId: account.id, accountName: account.name || account.accountName, youtubeTitle: ytPost.snippet.title, content: ytPost.snippet.description || '', mediaUrls: ytPost.snippet.thumbnails?.high?.url ? [ytPost.snippet.thumbnails.high.url] : [], mediaType: 'VIDEO', createdTime: ytPost.snippet.publishedAt, permalinkUrl: `https://www.youtube.com/watch?v=${ytPost.id}` }; }
             }
           } catch (err) {}
@@ -329,7 +333,7 @@ router.get('/', authMiddleware, async (req, res) => {
       for (const account of twAccounts) {
         try {
           const accessToken = decrypt(account.accessToken);
-          const twRes = await axios.get(`https://api.x.com/2/users/${account.accountId}/tweets`, {
+          const twRes = await cache.cachedGet(`https://api.x.com/2/users/${account.accountId}/tweets`, {
             headers: { Authorization: `Bearer ${accessToken}` },
             params: { max_results: 5, 'tweet.fields': 'created_at,public_metrics,attachments', expansions: 'attachments.media_keys', 'media.fields': 'url,preview_image_url,type' },
             timeout: 15000
@@ -431,17 +435,17 @@ router.get('/', authMiddleware, async (req, res) => {
 
         if (r.platform === 'facebook') {
           const pageToken = getPageTokenForPost(account, r.platformPostId);
-          if (pageToken) statPromises.push(axios.get(`https://graph.facebook.com/v19.0/${r.platformPostId}?fields=likes.summary(true),comments.summary(true)&access_token=${pageToken}`).then(res => { liveStatsMap[r.platformPostId] = { likes: res.data.likes?.summary?.total_count || 0, comments: res.data.comments?.summary?.total_count || 0 }; }).catch(() => {}));
+          if (pageToken) statPromises.push(cache.cachedGet(`https://graph.facebook.com/v19.0/${r.platformPostId}?fields=likes.summary(true),comments.summary(true)&access_token=${pageToken}`).then(res => { liveStatsMap[r.platformPostId] = { likes: res.data.likes?.summary?.total_count || 0, comments: res.data.comments?.summary?.total_count || 0 }; }).catch(() => {}));
         } else if (r.platform === 'instagram') {
           const pageToken = getPageTokenForPost(account, r.platformPostId) || (account.pages?.[0]?.pageAccessToken ? decrypt(account.pages[0].pageAccessToken) : null);
-          if (pageToken) statPromises.push(axios.get(`https://graph.facebook.com/v19.0/${r.platformPostId}?fields=like_count,comments_count&access_token=${pageToken}`).then(res => { liveStatsMap[r.platformPostId] = { likes: res.data.like_count || 0, comments: res.data.comments_count || 0 }; }).catch(() => {}));
+          if (pageToken) statPromises.push(cache.cachedGet(`https://graph.facebook.com/v19.0/${r.platformPostId}?fields=like_count,comments_count&access_token=${pageToken}`).then(res => { liveStatsMap[r.platformPostId] = { likes: res.data.like_count || 0, comments: res.data.comments_count || 0 }; }).catch(() => {}));
         } else if (r.platform === 'youtube') {
           ytBatchIds.push(r.platformPostId);
           ytClientAccount = ytClientAccount || account;
         } else if (r.platform === 'twitter') {
           try {
             const accessToken = decrypt(account.accessToken);
-            statPromises.push(axios.get(`https://api.x.com/2/tweets/${r.platformPostId}`, { headers: { Authorization: `Bearer ${accessToken}` }, params: { 'tweet.fields': 'public_metrics' }, timeout: 15000 }).then(res => { const m = res.data?.data?.public_metrics; if (m) liveStatsMap[r.platformPostId] = { likes: m.like_count || 0, comments: m.reply_count || 0, views: m.impression_count || 0 }; }).catch(() => {}));
+            statPromises.push(cache.cachedGet(`https://api.x.com/2/tweets/${r.platformPostId}`, { headers: { Authorization: `Bearer ${accessToken}` }, params: { 'tweet.fields': 'public_metrics' }, timeout: 15000 }).then(res => { const m = res.data?.data?.public_metrics; if (m) liveStatsMap[r.platformPostId] = { likes: m.like_count || 0, comments: m.reply_count || 0, views: m.impression_count || 0 }; }).catch(() => {}));
           } catch (err) {}
         }
       }
@@ -453,7 +457,7 @@ router.get('/', authMiddleware, async (req, res) => {
         const oauth2Client = new google.auth.OAuth2(process.env.YOUTUBE_CLIENT_ID, process.env.YOUTUBE_CLIENT_SECRET);
         oauth2Client.setCredentials({ access_token: decrypt(ytClientAccount.accessToken), refresh_token: ytClientAccount.refreshToken ? decrypt(ytClientAccount.refreshToken) : undefined });
         const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
-        statPromises.push(youtube.videos.list({ part: 'statistics', id: ytBatchIds.join(',') }).then(res => { for (const item of res.data.items || []) { liveStatsMap[item.id] = { likes: Number(item.statistics?.likeCount) || 0, comments: Number(item.statistics?.commentCount) || 0, views: Number(item.statistics?.viewCount) || 0 }; } }).catch(() => {}));
+        statPromises.push(ytList(youtube, ytClientAccount.id, 'videos', { part: 'statistics', id: ytBatchIds.join(',') }).then(res => { for (const item of res.data.items || []) { liveStatsMap[item.id] = { likes: Number(item.statistics?.likeCount) || 0, comments: Number(item.statistics?.commentCount) || 0, views: Number(item.statistics?.viewCount) || 0 }; } }).catch(() => {}));
       } catch (err) {}
     }
 

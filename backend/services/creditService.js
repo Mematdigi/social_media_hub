@@ -47,6 +47,16 @@ const DEFAULT_SETTINGS = {
   // Your approximate Google AI cost per credit (₹) — used only for the Admin → Usage cost estimate
   costPerCredit: { post: 3, image: 7, video: 80 },
   admins: [],     // extra admin emails added on the Admin page (ADMIN_EMAILS in .env always count too)
+  // 🆕 Enterprise: no price — "Call us / WhatsApp / Email / Request a call back" (website only)
+  enterprise: {
+    enabled: true,
+    name: 'Enterprise',
+    tagline: 'For agencies, brands and large teams',
+    features: ['Custom AI credits & video limits', 'Unlimited team members & brands', 'Dedicated account manager', 'Priority support & onboarding', 'Custom invoicing (GST)'],
+    phone: '',
+    whatsapp: '',
+    email: 'hello@mematdigi.com',
+  },
   paymentInstructions:
     'After you send the request, our team will contact you on your registered email with the payment details. ' +
     'Your credits are added as soon as the payment is confirmed.',
@@ -69,11 +79,22 @@ const cleanPack = (p = {}, fallbackId) => ({
   features: (Array.isArray(p.features) ? p.features : []).map(f => String(f).slice(0, 80)).filter(Boolean).slice(0, 8),
 });
 
+const cleanEnterprise = (e = {}) => ({
+  enabled: e.enabled !== false,
+  name: String(e.name || 'Enterprise').slice(0, 40),
+  tagline: String(e.tagline || '').slice(0, 120),
+  features: (Array.isArray(e.features) ? e.features : []).map(f => String(f).trim().slice(0, 80)).filter(Boolean).slice(0, 8),
+  phone: String(e.phone || '').replace(/[^\d+ ]/g, '').slice(0, 20),
+  whatsapp: String(e.whatsapp || '').replace(/\D/g, '').slice(0, 15),   // digits with country code, e.g. 919876543210
+  email: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(e.email || '').trim()) ? String(e.email).trim() : '',
+});
+
 const normalizeSettings = (value = {}) => ({
   signupCredits: cleanCredits(value.signupCredits ?? DEFAULT_SETTINGS.signupCredits),
   plans: (Array.isArray(value.plans) && value.plans.length ? value.plans : DEFAULT_SETTINGS.plans).map((p, i) => cleanPack(p, `plan${i + 1}`)),
   topups: (Array.isArray(value.topups) ? value.topups : DEFAULT_SETTINGS.topups).map((p, i) => ({ ...cleanPack(p, `topup${i + 1}`), period: 'once' })),
   gstPercent: Math.min(28, Math.max(0, Number(value.gstPercent ?? DEFAULT_SETTINGS.gstPercent) || 0)),
+  enterprise: cleanEnterprise(value.enterprise ?? DEFAULT_SETTINGS.enterprise),
   costPerCredit: Object.fromEntries(KINDS.map(k => [k, Math.max(0, Number(value.costPerCredit?.[k] ?? DEFAULT_SETTINGS.costPerCredit[k]) || 0)])),
   admins: [...new Set((Array.isArray(value.admins) ? value.admins : [])
     .map(e => String(e).trim().toLowerCase())
@@ -242,6 +263,13 @@ const charge = async (user, kind, { amount = 1, action = null, model = null } = 
   };
 };
 
+// 🆕 Paid = bought a plan (anything but "free"), or company / admin. Used for paid-only AI features.
+const isPaidUser = async (user) => {
+  await getSettings();
+  const w = await getWallet(user.id);
+  return isFreeUser(user, w) || (w.plan && w.plan !== 'free');
+};
+
 // Is there at least one credit of any kind? (used before an AI Agent chat turn)
 const hasAnyCredits = async (user) => {
   await getSettings();
@@ -293,6 +321,7 @@ module.exports = {
   formatWallet,
   charge,
   hasAnyCredits,
+  isPaidUser,
   addCredits,
   history,
   outOfCreditsError,

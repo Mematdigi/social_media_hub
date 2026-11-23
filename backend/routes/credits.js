@@ -48,6 +48,7 @@ router.get('/', authMiddleware, async (req, res) => {
       signupCredits: settings.signupCredits,
       paymentInstructions: settings.paymentInstructions,
       gstPercent: settings.gstPercent,
+      enterprise: settings.enterprise, // 🆕 contact card (website only)
       razorpay: razorpay.getPublicConfig(req.user), // { enabled, keyId, dummy, dummyOnly } — website only
       requests: requests.map(formatRequest),
     });
@@ -67,7 +68,11 @@ router.get('/history', authMiddleware, async (req, res) => {
 router.post('/request', authMiddleware, async (req, res) => {
   try {
     const { planId, note = '', source = 'web' } = req.body || {};
-    const pack = await credits.findPack(String(planId || ''));
+    // 🆕 Enterprise "Request a call back" — no price, shows up in Admin → Upgrade requests
+    const settings = await credits.getSettings();
+    const pack = String(planId) === 'enterprise' && settings.enterprise.enabled
+      ? { id: 'enterprise', name: `${settings.enterprise.name} — call back`, price: 0, credits: { post: 0, image: 0, video: 0 } }
+      : await credits.findPack(String(planId || ''));
     if (!pack) return res.status(400).json({ detail: 'That plan does not exist any more. Refresh the page.' });
 
     // One open request per plan is enough

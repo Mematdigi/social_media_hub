@@ -7,6 +7,7 @@ import { accountsAPI } from '../../services/api';
 import { toast } from 'sonner';
 import { AIAssistPanel } from './AIAssistPanel';
 import { MediaRetentionPicker } from './MediaRetentionPicker';
+import { ThumbnailPicker } from './ThumbnailPicker'; // 🆕 AI YouTube thumbnails
 import {
   AISuggestBar,
   TrendingTopicChips,
@@ -961,36 +962,16 @@ export const PostForm = ({ initialData = null, initialPost = null, onSubmit, loa
 
               <div className="border-t border-red-100 pt-6 mt-2">
                 <label className="block text-sm font-bold text-slate-700 mb-3">Custom Video Thumbnail</label>
-                <div className="flex flex-col sm:flex-row gap-5 items-center bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-                  {youtubeThumbnail ? (
-                    <div className="relative w-48 h-28 rounded-xl overflow-hidden border border-slate-200 flex-shrink-0 shadow-sm">
-                      <img src={youtubeThumbnail} alt="Thumbnail preview" className="w-full h-full object-cover" />
-                      <button
-                        type="button"
-                        onClick={() => setYoutubeThumbnail('')}
-                        className="absolute top-2 right-2 bg-slate-900/80 text-white p-1.5 rounded-lg hover:bg-red-500 transition-all active:scale-95 shadow-sm"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                    </div>
-                  ) : (
-                    <label className="w-48 h-28 flex flex-col items-center justify-center border-2 border-dashed border-red-200 rounded-xl bg-red-50/50 hover:bg-red-50 hover:border-red-400 cursor-pointer transition-all flex-shrink-0 group">
-                      <input type="file" accept="image/png, image/jpeg" onChange={handleThumbnailUpload} className="hidden" disabled={uploadingThumb} />
-                      {uploadingThumb ? (
-                        <Loader2 className="w-6 h-6 text-red-500 animate-spin" />
-                      ) : (
-                        <>
-                          <Camera className="w-6 h-6 text-red-400 group-hover:text-red-500 mb-2 transition-colors" />
-                          <span className="text-[11px] font-bold text-red-700 uppercase tracking-wide group-hover:text-red-800">Upload Cover</span>
-                        </>
-                      )}
-                    </label>
-                  )}
-                  <div className="text-xs text-slate-500 leading-relaxed text-center sm:text-left">
-                    <p className="font-bold text-slate-800 mb-1.5 text-sm">Upload a high-quality JPG or PNG.</p>
-                    <p className="font-medium">For best results, use a 1280x720 image under 2MB. This is the first thing viewers see on your channel feed!</p>
-                  </div>
-                </div>
+                {/* 🆕 Upload from device, or AI ideas from title + description → generate (paid plans) */}
+                <ThumbnailPicker
+                  value={youtubeThumbnail}
+                  onChange={setYoutubeThumbnail}
+                  onUpload={handleThumbnailUpload}
+                  uploading={uploadingThumb}
+                  title={postTitle}
+                  description={content}
+                  tags={youtubeTags.split(',').map((t) => t.trim()).filter(Boolean)}
+                />
               </div>
             </div>
           </motion.div>
