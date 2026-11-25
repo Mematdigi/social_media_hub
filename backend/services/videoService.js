@@ -22,6 +22,7 @@ const crypto   = require('crypto');
 const axios    = require('axios');
 const sharp    = require('sharp');
 const aiModels = require('../config/aiModels');
+const aiUsage  = require('./aiUsageService'); // 🆕 exact cost of every video
 const logger   = require('../utils/logger');
 
 const BASE = 'https://generativelanguage.googleapis.com/v1beta';
@@ -92,6 +93,20 @@ const download = async (url) => {
     maxRedirects: 5,
   });
   return Buffer.from(res.data);
+};
+
+// 🆕 Length of an MP4 in seconds, read from its "mvhd" header (no ffmpeg needed). 0 if unknown.
+const videoSeconds = async (buffer) => {
+  try {
+    const i = buffer.indexOf('mvhd');
+    if (i < 0) return 0;
+    const version = buffer[i + 4];
+    const timescale = version === 1 ? buffer.readUInt32BE(i + 24) : buffer.readUInt32BE(i + 16);
+    const duration = version === 1 ? Number(buffer.readBigUInt64BE(i + 28)) : buffer.readUInt32BE(i + 20);
+    return timescale ? Math.round((duration / timescale) * 10) / 10 : 0;
+  } catch (_) {
+    return 0;
+  }
 };
 
 // ── Gemini Omni Flash (Interactions API) ────────────────────────────────────
@@ -166,13 +181,27 @@ const omniGenerate = async ({ prompt, aspectRatio, image }) => {
     ({ data: interaction } = await axios.get(`${BASE}/interactions/${encodeURIComponent(interaction.id)}`, { headers: headers(), timeout: 60000, maxContentLength: Infinity }));
   }
 
+  // 🆕 cost tracking — Google's own token counts for this video (thinking + video tokens)
+  const usageRecord = {
+    model, kind: 'video', usage: interaction, usageType: 'interaction', prompt: text,
+    startedAt: started, videoSeconds: 0,
+  };
   if (interaction.status === 'failed' || interaction.status === 'cancelled') {
     const reason = interaction.errors?.[0]?.message || interaction.error?.message || 'unknown reason';
+    aiUsage.record({ ...usageRecord, error: reason });
     throw fail(`The video model could not create this video (${reason}). Try describing it differently.`, 422);
   }
   const video = findVideo(interaction);
-  if (!video) throw fail('The video model finished but returned no video. Try a different description.', 422);
-  return downloadOmniVideo(video);
+  if (!video) {
+    aiUsage.record({ ...usageRecord, error: 'finished without a video' });
+    throw fail('The video model finished but returned no video. Try a different description.', 422);
+  }
+  const buffer = await downloadOmniVideo(video);
+  const seconds = await videoSeconds(buffer);
+  // If Google sent no usage numbers, estimate from the clip length (tokens per second of this resolution)
+  const perSecond = (await aiUsage.getPricing()).videoTokensPerSecond[getResolution()] || 5792;
+  aiUsage.record({ ...usageRecord, videoSeconds: seconds, estimate: { videoTokens: Math.round((seconds || 8) * perSecond) } });
+  return buffer;
 };
 
 // ── Veo (predictLongRunning) — set VIDEO_PROVIDER=veo to use it ─────────────
@@ -191,7 +220,10 @@ const veoGenerate = async ({ prompt, aspectRatio }) => {
     await sleep(10000);
     ({ data: operation } = await axios.get(`${BASE}/${operation.name}`, { headers: headers(), timeout: 60000 }));
   }
-  if (operation.error) throw fail(`The video model could not create this video (${operation.error.message}).`, 422);
+  if (operation.error) {
+    aiUsage.record({ model, kind: 'video', prompt, startedAt: started, error: operation.error.message }); // 🆕
+    throw fail(`The video model could not create this video (${operation.error.message}).`, 422);
+  }
 
   const response = operation.response?.generateVideoResponse || operation.response || {};
   const uri = response.generatedSamples?.[0]?.video?.uri || response.generatedVideos?.[0]?.video?.uri;
@@ -199,7 +231,10 @@ const veoGenerate = async ({ prompt, aspectRatio }) => {
     const filtered = response.raiMediaFilteredReasons?.[0];
     throw fail(filtered ? `The video was blocked by Google's safety filter: ${filtered}` : 'The video model returned no video.', 422);
   }
-  return download(uri);
+  const buffer = await download(uri);
+  // 🆕 Veo is billed per second of video
+  aiUsage.record({ model, kind: 'video', prompt, startedAt: started, videoSeconds: (await videoSeconds(buffer)) || 8 });
+  return buffer;
 };
 
 // ── Public ───────────────────────────────────────────────────────────────────
@@ -231,6 +266,7 @@ const generateVideo = async ({ prompt, aspectRatio = '9:16', referenceFile = nul
   }
 
   const filename = await saveVideo(buffer);
+  await aiUsage.attachMedia(filename); // 🆕 lets Admin → AI costs link this video's cost to the post
   logger.success(`AI video ready in ${Math.round((Date.now() - startedAt) / 1000)}s: ${filename} (${status.model})`);
   return { filename, aspectRatio: ratio, model: status.model, resolution: status.resolution };
 };

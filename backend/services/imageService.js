@@ -17,6 +17,7 @@ const fs     = require('fs');
 const path   = require('path');
 const axios  = require('axios');
 const sharp  = require('sharp');
+const aiUsage = require('./aiUsageService'); // 🆕 cost tracking
 const aiModels = require('../config/aiModels'); // 🆕 image tier (AI_MODEL_IMAGE)
 
 const UPLOAD_DIR = path.join(__dirname, '../uploads');
@@ -82,9 +83,12 @@ const geminiImage = async ({ prompt, aspectRatio, inputImages = [] }) => {
   ];
 
   let res;
+  let usedModel;
+  const startedAt = Date.now();
   const models = aiModels.modelsFor('image');
   for (let i = 0; i < models.length; i++) {
     try {
+      usedModel = models[i];
       res = await axios.post(
         `https://generativelanguage.googleapis.com/v1beta/models/${models[i]}:generateContent`,
         { contents: [{ role: 'user', parts }], generationConfig },
@@ -99,12 +103,19 @@ const geminiImage = async ({ prompt, aspectRatio, inputImages = [] }) => {
     } catch (error) {
       // Model retired by Google → try the next one in config/aiModels.js
       if (i < models.length - 1 && aiModels.isModelMissing(error)) continue;
+      aiUsage.record({ model: models[i], kind: 'image', prompt, startedAt, error: error.response?.data?.error?.message || error.message }); // 🆕
       throw apiError(error, 'Image model error');
     }
   }
 
   const candidate = res.data?.candidates?.[0];
   const outParts = candidate?.content?.parts || [];
+  // 🆕 cost tracking — Google's exact token counts (image tokens are billed at the image price)
+  const producedImages = outParts.filter(p => (p.inlineData || p.inline_data) && !p.thought).length;
+  aiUsage.record({
+    model: usedModel, kind: 'image', usage: res.data?.usageMetadata, prompt, startedAt,
+    images: producedImages, estimate: producedImages ? { imageTokens: 1120 * producedImages } : null,
+  });
   // Gemini 3 image models "think" and may return draft images first — keep the final one
   const imageParts = outParts.filter(p => (p.inlineData || p.inline_data) && !p.thought);
   const finalPart = imageParts[imageParts.length - 1];
@@ -247,6 +258,7 @@ const generateImage = async ({ prompt, aspectRatio = '1:1', referenceFiles = [] 
   }
 
   const filename = await saveAsJpeg(buffer, { ratio: parseRatio(ratio), prefix: 'ai-image', minWidth: 1080 });
+  await aiUsage.attachMedia(filename); // 🆕 lets Admin → AI costs link this image's cost to the post
   return { filename, aspectRatio: ratio, provider: status.provider, model: status.model };
 };
 
@@ -305,6 +317,7 @@ const enhanceImage = async ({ filePath, mode = 'auto', instructions = '' }) => {
   });
 
   const filename = await saveAsJpeg(buffer, { ratio: width / height, prefix: 'enhanced', minWidth: Math.min(width, 2048) });
+  await aiUsage.attachMedia(filename); // 🆕
   return { filename, mode: 'ai', note: null };
 };
 

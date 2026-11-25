@@ -29,6 +29,7 @@ const videos        = require('./videoService');      // 🆕 AI videos (highest
 const credits       = require('./creditService');     // 🆕 AI credits
 const aiModels      = require('../config/aiModels');  // 🆕 which model does which job
 const logger        = require('../utils/logger');
+const aiUsage       = require('./aiUsageService');    // 🆕 exact cost of every AI call
 
 const TIMEZONE  = 'Asia/Kolkata';
 const MAX_STEPS = 12;
@@ -581,6 +582,9 @@ const callGemini = async (messages, attempt = 1) => {
   };
 
   let res;
+  const startedAt = Date.now();
+  const textOf = (c) => (typeof c === 'string' ? c : asArray(c).filter(b => b?.type === 'text').map(b => b.text).join(' '));
+  const lastUserText = asString(textOf([...messages].reverse().find(m => m.role === 'user' && textOf(m.content).trim())?.content));
   try {
     res = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/${getModel()}:generateContent`,
@@ -615,6 +619,9 @@ const callGemini = async (messages, attempt = 1) => {
     if (status === 429) throw fail('Gemini usage limit reached (free tier limits are low). Wait a minute, or enable billing for the key in Google AI Studio.', 429);
     throw fail(`AI provider error: ${message}`, 502);
   }
+
+  // 🆕 cost tracking — every agent turn re-sends the chat history, so long chats cost more per message
+  aiUsage.record({ model: getModel(), kind: 'agent', usage: res.data?.usageMetadata, prompt: lastUserText, startedAt });
 
   const candidate = res.data?.candidates?.[0];
   const parts = asArray(candidate?.content?.parts);
@@ -737,6 +744,7 @@ const updateProposalDisplay = (session, toolUseId, patch) => {
 // ── Public: send a chat message ──────────────────────────────────────────────
 // attachments: [{ url, kind: 'image' | 'video', name }]
 const sendMessage = async (session, ctx, { message, attachments = [] }) => {
+  aiUsage.setDraft(`agent:${session.id}`); // 🆕 all AI calls of this chat → linked to the post it creates
   // 🆕 The agent needs at least one AI credit (post, image or video)
   if (!(await credits.hasAnyCredits(ctx.user))) {
     const err = fail('You have used all your AI credits.', 402);
@@ -868,7 +876,11 @@ const createPost = async (ctx, decision) => {
   // Same endpoint the composer uses → same publisher, scheduler and validation
   try {
     const res = await axios.post(`${ctx.internalBaseUrl}/api/posts`, body, {
-      headers: { Authorization: ctx.authHeader, 'Content-Type': 'application/json' },
+      headers: {
+        Authorization: ctx.authHeader,
+        'Content-Type': 'application/json',
+        ...(aiUsage.currentDraftId() ? { 'X-Draft-Id': aiUsage.currentDraftId() } : {}), // 🆕 links this chat's AI cost to the post
+      },
       timeout: 20 * 60 * 1000, // video uploads can take a while
       maxBodyLength: Infinity,
     });
@@ -879,6 +891,7 @@ const createPost = async (ctx, decision) => {
 };
 
 const confirmProposal = async (session, ctx, decision) => {
+  aiUsage.setDraft(`agent:${session.id}`); // 🆕
   const pending = session.pending;
   if (!pending || pending.toolUseId !== decision.toolUseId) {
     throw fail('This post card is no longer active.', 409);

@@ -18,6 +18,7 @@ const agentRoutes = require('./routes/agent'); // 🆕 AI Agent
 const creditRoutes = require('./routes/credits'); // 🆕 AI credits & plans
 const adminRoutes = require('./routes/admin');     // 🆕 Admin page
 const paymentRoutes = require('./routes/payments'); // 🆕 Razorpay (website)
+const aiUsage = require('./services/aiUsageService'); // 🆕 exact cost of every AI call
 const razorpay = require('./services/razorpayService');
 const { startMediaCleanup } = require('./services/mediaCleanupService');
 const { getStatus: getAIStatus } = require('./services/aiService');
@@ -46,6 +47,7 @@ app.post('/api/payments/webhook', express.raw({ type: '*/*', limit: '1mb' }), ra
 app.use(express.json());
 
 // Routes
+app.use('/api', aiUsage.middleware); // 🆕 every AI call knows its user, feature and draft (Admin → AI costs)
 app.use('/api/auth', authRoutes);
 app.use('/api/accounts', accountRoutes);
 app.use('/api/posts', postRoutes);

@@ -1,6 +1,7 @@
 // pages/Admin.jsx
 // ─────────────────────────────────────────────────────────────────────────────
 // Admin (only the emails in ADMIN_EMAILS in backend/.env):
+//   • AI costs — 🆕 exact Google AI cost of every call, post, model and user (components/admin/AiCostsTab.jsx)
 //   • Usage    — credits used per day, active users, average credits per AI post, top users
 //   • Creators — separate logins for your company's creators: free AI, every use tracked
 //   • Requests — approve after you receive the payment → the plan's credits are added
@@ -14,6 +15,7 @@ import { Building2, Check, Loader2, Plus, Save, Search, ShieldCheck, Trash2, X }
 import { PageWrapper } from '../components/layout/PageWrapper';
 import { adminAPI } from '../services/api';
 import { cn } from '../lib/utils';
+import AiCostsTab from '../components/admin/AiCostsTab'; // 🆕
 
 const errorText = (error, fallback) => error?.response?.data?.detail || error?.message || fallback;
 const rupees = (n) => `₹${Number(n || 0).toLocaleString('en-IN')}`;
@@ -677,7 +679,7 @@ const SettingsTab = () => {
 };
 
 // ── Page ─────────────────────────────────────────────────────────────────────
-const TABS = [['usage', 'Usage'], ['creators', 'Company creators'], ['payments', 'Payments'], ['requests', 'Upgrade requests'], ['users', 'Users & credits'], ['settings', 'Plans & settings']];
+const TABS = [['usage', 'Usage'], ['aicosts', 'AI costs'], ['creators', 'Company creators'], ['payments', 'Payments'], ['requests', 'Upgrade requests'], ['users', 'Users & credits'], ['settings', 'Plans & settings']];
 
 const Admin = () => {
   const [tab, setTab] = useState('usage');
@@ -733,6 +735,7 @@ const Admin = () => {
       </div>
 
       {tab === 'usage' && <UsageTab />}
+      {tab === 'aicosts' && <AiCostsTab />}
       {tab === 'creators' && <CreatorsTab />}
       {tab === 'payments' && <PaymentsTab />}
       {tab === 'requests' && <RequestsTab onChanged={loadOverview} />}

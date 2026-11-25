@@ -11,6 +11,7 @@ const { publishPostToPlatforms } = require('../services/publishService');
 const { encrypt, decrypt } = require('../utils/encryption');
 const axios = require('axios');
 const cache = require('../services/cacheService'); // 🆕 Redis/memory cache for live platform reads
+const aiUsage = require('../services/aiUsageService'); // 🆕 links AI cost (text, images, video) to the post
 // 🆕 Cached YouTube list calls (search.list alone costs 100 quota units)
 const ytList = (youtube, accountId, resource, args) =>
   cache.wrap(`yt:${accountId}:${resource}:${cache.hash(args)}`, cache.feedTtl(), async () => ({ data: (await youtube[resource].list(args)).data }));
@@ -597,6 +598,8 @@ router.post('/', authMiddleware, async (req, res) => {
     });
 
     await post.save();
+    // 🆕 Admin → AI costs: this post's AI calls (same composer draft, or its AI images/videos/thumbnail)
+    aiUsage.linkPost({ userId: req.user.id, postId: post.id, draftId: aiUsage.currentDraftId(), mediaUrls: [...(post.mediaUrls || []), post.youtubeThumbnail].filter(Boolean) });
 
    // ── Publish immediately if status is 'publishing' ────────
     if (postStatus === 'publishing') {
@@ -808,6 +811,7 @@ router.put('/:postId', authMiddleware, async (req, res) => {
 
     post.updatedAt = new Date();
     await post.save();
+    aiUsage.linkPost({ userId: req.user.id, postId: post.id, draftId: aiUsage.currentDraftId(), mediaUrls: [...(post.mediaUrls || []), post.youtubeThumbnail].filter(Boolean) }); // 🆕
 
     // 3. Re-Sync Live Posts if already published
     if (post.status === 'published') {

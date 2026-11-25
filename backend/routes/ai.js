@@ -14,6 +14,7 @@ const ai             = require('../services/aiService');
 const trends         = require('../services/trendsService');
 const credits        = require('../services/creditService'); // 🆕 1 AI post credit per "Write with AI"
 const thumbnails     = require('../services/thumbnailService'); // 🆕 YouTube thumbnails with AI
+const mediaGen       = require('../services/mediaGenService');  // 🆕 "Generate with AI" in Create post
 const images         = require('../services/imageService');
 
 const router = express.Router();
@@ -343,5 +344,72 @@ router.post('/thumbnail/generate', authMiddleware, async (req, res) => {
     res.status(error.status || 500).json({ detail: error.message || 'Could not create the thumbnail' });
   }
 });
+
+// ── 🆕 "Generate with AI" in Create post ─────────────────────────────────────
+// POST /api/ai/media/prompt { caption, kind: image|video, aspectRatio } → { prompt }  (free, cached)
+// POST /api/ai/media/image  { prompt, aspectRatio }  → { url, kind: 'image' }   1 AI image credit
+// POST /api/ai/media/video  { prompt, aspectRatio }  → { url, kind: 'video' }   1 AI video credit (1–6 min)
+const videoUse = new Map();
+const VIDEO_PER_HOUR = () => Number(process.env.VIDEO_RATE_LIMIT_PER_HOUR) || 5;
+const consumeVideo = (userId) => {
+  const now = Date.now();
+  const recent = (videoUse.get(userId) || []).filter(t => now - t < 60 * MIN);
+  if (recent.length >= VIDEO_PER_HOUR()) return false;
+  recent.push(now);
+  videoUse.set(userId, recent);
+  return true;
+};
+
+router.post('/media/prompt', authMiddleware, async (req, res) => {
+  try {
+    if (!consumeAiCredit(req.user.id)) return rateLimited(res);
+    const { caption = '', kind = 'image', aspectRatio = '1:1' } = req.body || {};
+    res.json({ prompt: await mediaGen.writePrompt({ caption, kind, aspectRatio }) });
+  } catch (error) {
+    res.status(error.status || 500).json({ detail: error.message || 'Could not write a prompt' });
+  }
+});
+
+const generateMedia = (kind) => async (req, res) => {
+  try {
+    const prompt = String(req.body?.prompt || '').trim();
+    if (prompt.length < 5) return res.status(400).json({ detail: 'Describe what you want to create.' });
+    if (kind === 'video') {
+      const status = mediaGen.videoStatus();
+      if (!status.configured) return res.status(503).json({ detail: status.reason });
+      if (!consumeVideo(req.user.id)) return res.status(429).json({ detail: `Video limit reached (${VIDEO_PER_HOUR()} per hour). Try again later.` });
+    } else if (!consumeAiCredit(req.user.id)) {
+      return rateLimited(res);
+    }
+
+    let credit;
+    try {
+      credit = await credits.charge(req.user, kind, {
+        action: kind === 'video' ? 'post_video' : 'post_image',
+        model: kind === 'video' ? mediaGen.videoStatus().model : images.getStatus().model,
+      });
+    } catch (error) {
+      if (error.code !== 'NO_CREDITS') throw error;
+      return res.status(402).json({ detail: error.message, code: error.code, kind });
+    }
+
+    let result;
+    try {
+      result = kind === 'video'
+        ? await mediaGen.createVideo({ prompt, aspectRatio: req.body?.aspectRatio })
+        : await mediaGen.createImage({ prompt, aspectRatio: req.body?.aspectRatio });
+    } catch (error) {
+      await credit.refund();
+      throw error;
+    }
+    res.json({ url: `${publicBase(req)}/uploads/${result.filename}`, kind: result.kind, aspectRatio: result.aspectRatio, model: result.model });
+  } catch (error) {
+    logger.error(`AI ${kind} for post failed`, error.message);
+    res.status(error.status || 500).json({ detail: error.message || `Could not create the ${kind}` });
+  }
+};
+
+router.post('/media/image', authMiddleware, generateMedia('image'));
+router.post('/media/video', authMiddleware, generateMedia('video'));
 
 module.exports = router;

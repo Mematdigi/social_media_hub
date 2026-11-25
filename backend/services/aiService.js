@@ -15,6 +15,7 @@
 const axios  = require('axios');
 const logger = require('../utils/logger');
 const aiModels = require('../config/aiModels'); // 🆕 cheap model for light tasks
+const aiUsage = require('./aiUsageService'); // 🆕 exact cost of every AI call (Admin → AI costs)
 
 const REGION_NAMES = {
   IN: 'India',
@@ -113,7 +114,10 @@ const callGemini = async (args) => {
 };
 
 const callGeminiModel = async (model, { system, prompt, maxTokens }) => {
-  const res = await axios.post(
+  const startedAt = Date.now();
+  let res;
+  try {
+  res = await axios.post(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
     {
       systemInstruction: { parts: [{ text: system }] },
@@ -132,6 +136,14 @@ const callGeminiModel = async (model, { system, prompt, maxTokens }) => {
       timeout: 120000,
     }
   );
+  } catch (error) {
+    // 🆕 failed calls are logged too (Google does not bill them)
+    if (!aiModels.isModelMissing(error)) {
+      aiUsage.record({ model, kind: 'text', prompt, startedAt, error: error.response?.data?.error?.message || error.message });
+    }
+    throw error;
+  }
+  aiUsage.record({ model, kind: 'text', usage: res.data?.usageMetadata, prompt, startedAt }); // 🆕 cost tracking
 
   const candidate = res.data?.candidates?.[0];
   if (!candidate) {

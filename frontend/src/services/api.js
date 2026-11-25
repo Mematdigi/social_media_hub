@@ -7,11 +7,16 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
+// 🆕 Id of the post being written — sent with AI requests so Admin → AI costs can show the cost per post
+let aiDraftId = null;
+export const setAiDraftId = (id) => { aiDraftId = id || null; };
+
 // Request interceptor - attach token
 api.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('socialhub_token');
     if (token) config.headers.Authorization = `Bearer ${token}`;
+    if (aiDraftId) config.headers['X-Draft-Id'] = aiDraftId; // 🆕
     return config;
   },
   (error) => Promise.reject(error)
@@ -254,6 +259,14 @@ export const adminAPI = {
   payments:       (status = 'all') => api.get('/admin/payments', { params: { status } }),
   settings:       ()               => api.get('/admin/settings'),
   saveSettings:   (data)           => api.put('/admin/settings', data),
+  // 🆕 AI costs (exact Google spend per call / post / model / user)
+  aiCosts:        (params)         => api.get('/admin/ai-costs', { params }),
+  aiCostCalls:    (params)         => api.get('/admin/ai-costs/calls', { params }),
+  aiCostPost:     (postId)         => api.get(`/admin/ai-costs/posts/${postId}`),
+  aiCostCsv:      (params)         => api.get('/admin/ai-costs/export.csv', { params, responseType: 'blob' }),
+  aiPricing:      ()               => api.get('/admin/ai-costs/pricing'),
+  saveAiPricing:  (data)           => api.put('/admin/ai-costs/pricing', data),
+  recalcAiCosts:  (params)         => api.post('/admin/ai-costs/recalculate', null, { params }),
 };
 
 // Scheduler API

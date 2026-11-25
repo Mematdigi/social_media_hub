@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Upload, X, Calendar, Send, Loader2, Youtube, FileText, Tag, Lock, Globe, Users, Camera, LayoutGrid, Image as ImageIcon, Share2, Sparkles } from 'lucide-react';
 import { Button } from '../ui/button';
-import { accountsAPI } from '../../services/api';
+import { accountsAPI, setAiDraftId } from '../../services/api';
 import { toast } from 'sonner';
 import { AIAssistPanel } from './AIAssistPanel';
 import { MediaRetentionPicker } from './MediaRetentionPicker';
@@ -89,6 +89,12 @@ const SectionCard = ({ title, icon: Icon, children, subtitle }) => (
 
 export const PostForm = ({ initialData = null, initialPost = null, onSubmit, loading }) => {
   const initial = initialData || initialPost || null;
+
+  // 🆕 One id per composer session, sent with AI requests → Admin → AI costs shows this post's AI cost
+  React.useEffect(() => {
+    setAiDraftId(initial?.id ? `post:${initial.id}` : `draft:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`);
+    return () => setAiDraftId(null);
+  }, [initial?.id]);
 
   // ✨ UNIFIED TITLE: Replaces youtubeTitle so it applies to all platforms
   const [postTitle, setPostTitle]       = useState(initial?.youtubeTitle || initial?.title || '');

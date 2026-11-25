@@ -12,6 +12,7 @@
 // POST /api/admin/requests/:id/reject     → { note }
 // GET  /api/admin/settings                → plans, top-ups, free sign-up credits
 // PUT  /api/admin/settings                → save them
+// /api/admin/ai-costs/…                   → 🆕 AI costs (see routes/adminAiCosts.js)
 // ─────────────────────────────────────────────────────────────────────────────
 const express        = require('express');
 const bcrypt         = require('bcryptjs');
@@ -30,6 +31,7 @@ const logger         = require('../utils/logger');
 
 const router = express.Router();
 router.use(authMiddleware, adminOnly);
+router.use('/ai-costs', require('./adminAiCosts')); // 🆕 exact Google AI cost per call / post / model / user
 
 const sendError = (res, error, fallback) => {
   const status = error.status || 500;
