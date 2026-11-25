@@ -203,6 +203,10 @@ export const aiAPI = {
   // 🆕 YouTube thumbnails: ideas are free; generating one is for paid plans (1 AI image credit)
   thumbnailIdeas:    (data) => api.post('/ai/thumbnail/ideas', data, { timeout: 120000 }),
   thumbnailGenerate: (data) => api.post('/ai/thumbnail/generate', data, { timeout: 300000 }),
+  // 🆕 "Generate with AI" in Create post (image = 1 image credit, video = 1 video credit, 1–6 min)
+  mediaPrompt: (data) => api.post('/ai/media/prompt', data, { timeout: 120000 }),
+  mediaImage:  (data) => api.post('/ai/media/image', data, { timeout: 300000 }),
+  mediaVideo:  (data) => api.post('/ai/media/video', data, { timeout: 660000 }),
 };
 
 // 🆕 AI Agent API (Claude) — chat, generate/enhance images, post & schedule

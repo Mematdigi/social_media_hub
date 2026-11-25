@@ -1,13 +1,14 @@
 import React, { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Upload, X, Calendar, Send, Loader2, Youtube, FileText, Tag, Lock, Globe, Users, Camera, LayoutGrid, Image as ImageIcon, Share2 } from 'lucide-react';
+import { Upload, X, Calendar, Send, Loader2, Youtube, FileText, Tag, Lock, Globe, Users, Camera, LayoutGrid, Image as ImageIcon, Share2, Sparkles } from 'lucide-react';
 import { Button } from '../ui/button';
 import { accountsAPI } from '../../services/api';
 import { toast } from 'sonner';
 import { AIAssistPanel } from './AIAssistPanel';
 import { MediaRetentionPicker } from './MediaRetentionPicker';
 import { ThumbnailPicker } from './ThumbnailPicker'; // 🆕 AI YouTube thumbnails
+import { AIMediaGenerator } from './AIMediaGenerator'; // 🆕 Generate photo / video with AI
 import {
   AISuggestBar,
   TrendingTopicChips,
@@ -113,6 +114,7 @@ export const PostForm = ({ initialData = null, initialPost = null, onSubmit, loa
   const [selectedFormat, setSelectedFormat] = useState('facebook');
   const [youtubeThumbnail, setYoutubeThumbnail] = useState(initial?.youtubeThumbnail || '');
   const [uploadingThumb, setUploadingThumb] = useState(false);
+  const [aiMediaOpen, setAiMediaOpen] = useState(false); // 🆕 Generate with AI
   
   // ✨ FIX: Strict locking state to completely prevent double-click publishing
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -635,6 +637,30 @@ export const PostForm = ({ initialData = null, initialPost = null, onSubmit, loa
             </div>
           </label>
         </div>
+
+        {/* 🆕 Or create the photo / video with AI */}
+        <div className="mt-3 flex flex-col items-center gap-2 sm:flex-row sm:justify-center">
+          <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">or</span>
+          <button
+            type="button"
+            onClick={() => setAiMediaOpen(true)}
+            disabled={uploading}
+            className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:opacity-95 disabled:opacity-60"
+          >
+            <Sparkles className="w-4 h-4" /> Generate photo or video with AI
+          </button>
+        </div>
+        <AIMediaGenerator
+          key={aiMediaOpen ? `open-${selectedFormat}` : 'closed'}
+          open={aiMediaOpen}
+          onClose={() => setAiMediaOpen(false)}
+          caption={content}
+          format={selectedFormat}
+          onAdd={(url) => {
+            setMediaUrls((prev) => [...prev, url]);
+            setMediaFormats((prev) => ({ ...prev, [url]: selectedFormat }));
+          }}
+        />
 
         {uploading && uploadProgress > 0 && (
           <div className="mt-5">
