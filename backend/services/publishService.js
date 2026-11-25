@@ -389,51 +389,15 @@ facebook: async ({ pageToken, pageId, content, mediaUrls, mediaType }) => {
       const videoId = uploadRes.data.id;
       logger.info('▶️', `✅ YouTube upload complete — Video ID: ${videoId}`);
 
-      // ─── 🔄 DYNAMIC FORMAT THUMBNAIL STREAMER ───────────────────────
+      // ─── 🆕 CUSTOM THUMBNAIL ────────────────────────────────────────
+      // YouTube only accepts a thumbnail once the video has FINISHED PROCESSING (always true for Shorts),
+      // so this runs in the background: wait for processing, then set it (with retries).
+      // The publish result is not delayed by this.
       if (youtubeThumbnailUrl) {
-        try {
-          logger.info('▶️', `Setting custom thumbnail for Video ID: ${videoId}`);
-
-          const isPng = youtubeThumbnailUrl.toLowerCase().split('?')[0].endsWith('.png');
-          const calculatedMimeType = isPng ? 'image/png' : 'image/jpeg';
-
-          let thumbnailStream;
-
-          if (youtubeThumbnailUrl.startsWith('http')) {
-            const imageRes = await axios.get(youtubeThumbnailUrl, { responseType: 'stream' });
-            thumbnailStream = imageRes.data;
-          } else {
-            const thumbFilename = youtubeThumbnailUrl.split('/').pop();
-            const localThumbPath = path.join(__dirname, '../uploads', thumbFilename);
-
-            if (fs.existsSync(localThumbPath)) {
-              thumbnailStream = fs.createReadStream(localThumbPath);
-            } else {
-              throw new Error(`Local file path not found: ${localThumbPath}`);
-            }
-          }
-
-          await youtubeApi.thumbnails.set({
-            videoId: videoId,
-            media: {
-              mimeType: calculatedMimeType,
-              body: thumbnailStream,
-            },
-          });
-
-          logger.info('▶️', `✅ Custom thumbnail successfully pushed to YouTube!`);
-        } catch (thumbErr) {
-          const apiError = thumbErr.response?.data?.error?.message || thumbErr.message;
-          
-          // ✨ THE FIX: Suppress the permissions error so it doesn't look like a crash.
-    if (apiError.toLowerCase().includes('permissions')) {
-            console.warn(`⚠️ Thumbnail skipped: YouTube Channel is not verified for custom thumbnails yet. Video published with default thumbnail!`);
-          } else {
-            console.warn(`⚠️ Thumbnail skipped due to API error: ${apiError}`);
-          }
-        }
+        setYouTubeThumbnailWhenReady(youtubeApi, videoId, youtubeThumbnailUrl)
+          .catch(err => logger.error('YouTube thumbnail', err.message));
       }
-      
+
       // We always return success here because the video uploaded perfectly
       return { postId: videoId };
 
@@ -623,6 +587,83 @@ const publishToAccount = async (account, post) => {
 // ═══════════════════════════════════════════════════════════════
 // MAIN EXPORT
 // ═══════════════════════════════════════════════════════════════
+
+
+// ── 🆕 YouTube custom thumbnail ─────────────────────────────────────────────
+// Reads the image (our /uploads file or any URL), makes it a JPEG under YouTube's 2 MB limit,
+// waits until YouTube has processed the video, then sets it. Retries a few times.
+const sleepMs = (ms) => new Promise(r => setTimeout(r, ms));
+
+const loadThumbnailBuffer = async (thumbUrl) => {
+  const filename = String(thumbUrl).split('?')[0].split('/').pop();
+  const localPath = path.join(__dirname, '../uploads', filename);
+  let buffer;
+  if (filename && fs.existsSync(localPath)) {
+    buffer = await fs.promises.readFile(localPath);            // our own upload → no HTTP round-trip
+  } else if (/^https?:\/\//i.test(thumbUrl)) {
+    buffer = Buffer.from((await axios.get(thumbUrl, { responseType: 'arraybuffer', timeout: 60000 })).data);
+  } else {
+    throw new Error(`Thumbnail file not found: ${thumbUrl}`);
+  }
+  let sharp = null;
+  try { sharp = require('sharp'); } catch (_) { /* optional */ }
+  if (!sharp) return { buffer, mimeType: /\.png$/i.test(filename) ? 'image/png' : 'image/jpeg' };
+  // JPEG, max 1920px, under 2 MB (YouTube's limit)
+  try {
+    await sharp(buffer).metadata();
+  } catch (_) {
+    return { buffer, mimeType: /\.png$/i.test(filename) ? 'image/png' : 'image/jpeg' }; // unknown format → send as is
+  }
+  let quality = 90;
+  let out = await sharp(buffer).rotate().resize({ width: 1920, height: 1920, fit: 'inside', withoutEnlargement: true }).jpeg({ quality }).toBuffer();
+  while (out.length > 1.9 * 1024 * 1024 && quality > 40) {
+    quality -= 15;
+    out = await sharp(buffer).rotate().resize({ width: 1280, height: 1280, fit: 'inside', withoutEnlargement: true }).jpeg({ quality }).toBuffer();
+  }
+  return { buffer: out, mimeType: 'image/jpeg' };
+};
+
+const setYouTubeThumbnailWhenReady = async (youtubeApi, videoId, thumbUrl) => {
+  const { Readable } = require('stream');
+  const { buffer, mimeType } = await loadThumbnailBuffer(thumbUrl);
+
+  // 1. Wait for YouTube to finish processing (up to ~10 minutes)
+  const started = Date.now();
+  for (;;) {
+    let status = null;
+    try {
+      const { data } = await youtubeApi.videos.list({ part: ['processingDetails', 'status'], id: [videoId] });
+      status = data.items?.[0]?.processingDetails?.processingStatus || null;
+      if (data.items?.[0]?.status?.uploadStatus === 'processed') status = 'succeeded';
+    } catch (e) {
+      logger.info('▶️', `Thumbnail: could not read processing status yet (${e.message})`);
+    }
+    if (status === 'succeeded') break;
+    if (status === 'failed' || status === 'terminated') throw new Error(`video processing ${status}, thumbnail not set`);
+    if (Date.now() - started > 10 * 60 * 1000) { logger.info('▶️', 'Thumbnail: video still processing after 10 min — trying anyway'); break; }
+    await sleepMs(15000);
+  }
+
+  // 2. Set it (retry: YouTube sometimes needs a little longer after "succeeded")
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    try {
+      await youtubeApi.thumbnails.set({ videoId, media: { mimeType, body: Readable.from(buffer) } });
+      logger.success(`YouTube thumbnail set for ${videoId}`);
+      return true;
+    } catch (err) {
+      const message = err.response?.data?.error?.message || err.message;
+      const reason = err.response?.data?.error?.errors?.[0]?.reason || '';
+      if (/permission|forbidden/i.test(`${message} ${reason}`) && attempt >= 2) {
+        logger.error('YouTube thumbnail', `not allowed for this channel: ${message}. Verify the channel's phone number in YouTube Studio → Settings → Channel → Feature eligibility.`);
+        return false;
+      }
+      if (attempt === 4) throw new Error(message);
+      logger.info('▶️', `Thumbnail attempt ${attempt} failed (${message}) — retrying in 30s`);
+      await sleepMs(30000);
+    }
+  }
+  return false;
+};
 
 const publishPostToPlatforms = async (post, accounts) => {
   const platformResults = [];
